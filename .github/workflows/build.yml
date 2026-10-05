@@ -31,21 +31,36 @@ jobs:
   build:
     name: Build and test against a stock plasma-nm
     runs-on: ubuntu-latest
-    env:
-      # Outside the checkout, which is what testing/paths.sh insists on, and
-      # on the runner's own scratch filesystem.
-      BUILD_ROOT: ${{ github.workspace }}/../openvpn3-build
     steps:
+      # The runner's own scratch directory, which is outside the checkout --
+      # what testing/paths.sh insists on -- and, unlike a sibling of the
+      # workspace, is reached without a "..". run.sh canonicalises whatever it
+      # is given, but actions/upload-artifact judges the string it is handed
+      # and rejects one containing "/../" however it resolves: that is what
+      # failed run 37331953615, after the build, the tests, the packaging and
+      # the install-check had all passed.
+      #
+      # In a step, not in the job's env: runner.temp is not available there,
+      # and RUNNER_TEMP is only set once a job is running on a machine.
+      # testing/test-workflows.sh keeps this path canonical and accepted.
+      - name: Choose the scratch directory
+        run: |
+          set -eu
+          echo "BUILD_ROOT=$RUNNER_TEMP/openvpn3-build" >> "$GITHUB_ENV"
+
       - name: Check out the module
         uses: actions/checkout@v4
         with:
           # describe() names the artifacts, so the tags have to be here.
           fetch-depth: 0
 
+      # No continue-on-error: a backend that was asked for and did not arrive
+      # is a failed run, not a quieter one. Letting this step fail softly meant
+      # a bad repository name or ref turned the importer tests into skips --
+      # and a release would have been published off a run that never exercised
+      # the real importer, saying so only in a job summary nobody reads.
       - name: Check out the OpenVPN 3 backend
-        id: backend
         if: inputs.backend-repository != ''
-        continue-on-error: true
         uses: actions/checkout@v4
         with:
           repository: ${{ inputs.backend-repository }}
@@ -53,10 +68,18 @@ jobs:
           path: backend
 
       - name: Report whether the importer tests will run for real
+        env:
+          BACKEND_REPOSITORY: ${{ inputs.backend-repository }}
         run: |
+          set -eu
           if [ -f backend/meson.build ]; then
             echo "BACKEND_ROOT=$GITHUB_WORKSPACE/backend" >> "$GITHUB_ENV"
             echo "The OpenVPN 3 backend is present: the importer tests run against the real libnm importer." >> "$GITHUB_STEP_SUMMARY"
+          elif [ -n "$BACKEND_REPOSITORY" ]; then
+            # Checked out, so the ref exists, but it has no meson.build: this
+            # is not the backend, and the importer tests would have skipped.
+            echo "::error::$BACKEND_REPOSITORY was checked out but has no meson.build, so it is not the OpenVPN 3 backend; refusing to skip the importer tests silently."
+            exit 1
           else
             echo "The OpenVPN 3 backend is **not** present: the importer tests will skip." >> "$GITHUB_STEP_SUMMARY"
             echo "A run with no skips is the evidence that the real importer was exercised; this run is not one." >> "$GITHUB_STEP_SUMMARY"

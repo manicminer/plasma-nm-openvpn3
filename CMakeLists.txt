@@ -69,6 +69,11 @@ if(BUILD_TESTING)
     # failed assertion rather than a damaged host. See testing/test-paths.sh.
     add_test(NAME harness-path-guards
              COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/testing/test-paths.sh)
+    # The guards resolve a path before judging it, which is why they cannot
+    # see a workflow handing an action a path with a ".." in it; the workflow
+    # text is checked separately. See testing/test-workflows.sh.
+    add_test(NAME workflow-checks
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/testing/test-workflows.sh)
     # The release gate runs on a tag, which is the worst moment to find a bug
     # in it; this is how it is rehearsed without one.
     add_test(NAME release-gate

@@ -19,6 +19,40 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # A workflow bug costs a whole build to find out about: run 37331953615 spent
+  # one proving that actions/upload-artifact will not take a path with a ".."
+  # in it. This job is the cheap half of that lesson, and it runs the same
+  # checks a developer can run locally.
+  workflows:
+    name: Lint the workflows
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the module
+        uses: actions/checkout@v4
+
+      # Pinned and checksummed, like everything else this repository
+      # downloads. A linter fetched as "latest" is a linter whose rules change
+      # under runs that nobody touched.
+      - name: Install actionlint
+        env:
+          ACTIONLINT_VERSION: 1.7.12
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          set -eu
+          archive="$RUNNER_TEMP/actionlint.tar.gz"
+          curl -fsSL -o "$archive" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "$ACTIONLINT_SHA256  $archive" | sha256sum -c -
+          tar -xzf "$archive" -C "$RUNNER_TEMP" actionlint
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+
+      # REQUIRE_ACTIONLINT, because a linter that is quietly absent lints
+      # nothing and still reports success.
+      - name: Check the workflows
+        env:
+          REQUIRE_ACTIONLINT: '1'
+        run: testing/test-workflows.sh
+
   build:
     uses: ./.github/workflows/build.yml
     with:

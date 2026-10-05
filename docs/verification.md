@@ -49,6 +49,18 @@ so a guard regression fails an assertion instead of damaging the host:
 testing/test-paths.sh
 ```
 
+Those guards resolve a path before judging it, which is exactly why they
+cannot see a workflow handing `actions/upload-artifact` a `BUILD_ROOT` with a
+`..` in it — a build that passes every step and then fails on the upload.
+[`testing/test-workflows.sh`](../testing/test-workflows.sh) reads the workflow
+text instead: no `..` in a path given to an action, no step allowed to fail
+softly, and a `BUILD_ROOT` the guards accept unchanged. It also runs
+`actionlint` when that is installed, which CI requires:
+
+```bash
+testing/test-workflows.sh
+```
+
 `IMAGE_BUILD` and `IMAGE_TEST` override the image tags, so a second checkout
 can be verified without overwriting the first one's images. `BUILD_TYPE`
 defaults to `Debug`, `JOBS` to 2 and `MEMORY` to `8g`; containers run
