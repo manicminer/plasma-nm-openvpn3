@@ -417,6 +417,47 @@ private Q_SLOTS:
         QCOMPARE(dataOf(widget.setting()).value(u"username"_s), u"new-user"_s);
     }
 
+    /**
+     * A secret-mode connection with no profile-flags entry says why the
+     * profile may not have arrived, because the reason is not in the editor.
+     *
+     * A connection editor asks NetworkManager for the secrets a connection
+     * records that it keeps, and the record is the -flags entries. Nothing
+     * this plugin writes is ever missing profile-flags, but a connection
+     * written by something else can be, and then the profile is simply never
+     * requested -- which looks exactly like a locked wallet from in here.
+     */
+    void aSecretProfileWithoutFlagsSaysWhyItMayNotHaveArrived()
+    {
+        OpenVpn3SettingWidget widget(settingFrom({{u"profile-storage"_s, u"secret"_s}}));
+        QVERIFY(!widget.isValid());
+        const QString problem = widget.blockingProblem();
+        QVERIFY2(problem.contains(u"profile-flags"_s), qPrintable(problem));
+        QVERIFY2(problem.contains(u"nmcli"_s), qPrintable(problem));
+
+        // A connection that does record them is locked for some other reason,
+        // and guessing at this one would only mislead.
+        OpenVpn3SettingWidget recorded(settingFrom({{u"profile-storage"_s, u"secret"_s}, {u"profile-flags"_s, u"1"_s}}));
+        QVERIFY(!recorded.isValid());
+        QVERIFY(!recorded.blockingProblem().contains(u"profile-flags"_s));
+
+        // Nor does a missing entry mean the secrets were not asked for: the
+        // host asks for all of a connection's VPN secrets when any one of its
+        // -flags entries says a secret is kept, so one of those is enough and
+        // the profile arrives with it. Saying otherwise would send somebody
+        // off to change an entry that was not the problem.
+        for (const QString &flags : {u"0"_s, u"1"_s, u"not-a-number"_s}) {
+            OpenVpn3SettingWidget asked(settingFrom({{u"profile-storage"_s, u"secret"_s}, {u"password-flags"_s, flags}}));
+            QVERIFY(!asked.isValid());
+            QVERIFY2(!asked.blockingProblem().contains(u"profile-flags"_s), qPrintable(flags + u": "_s + asked.blockingProblem()));
+        }
+        // ... but a connection whose only other entry says nothing is kept is
+        // one the host really does not ask about.
+        OpenVpn3SettingWidget unasked(settingFrom({{u"profile-storage"_s, u"secret"_s}, {u"password-flags"_s, u"4"_s}}));
+        QVERIFY(!unasked.isValid());
+        QVERIFY(unasked.blockingProblem().contains(u"profile-flags"_s));
+    }
+
     void normalizedPasswordCannotBypassUnavailableWallet()
     {
         Openvpn3Storage::setSecretServiceAvailability(false);

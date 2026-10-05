@@ -161,7 +161,7 @@ private:
     void refreshMaterialRows();
     void refreshStorageChoices();
     //! What the page says about a profile it has, or has not, got.
-    static QString refreshedStatusText(Openvpn3Storage::Availability availability);
+    static QString refreshedStatusText(Openvpn3Storage::Availability availability, const NMStringMap &data);
 
     struct MaterialRow;
     void addMaterialRow(class QFormLayout *form, const QString &label, const QString &directive, bool base64, const QString &filter);

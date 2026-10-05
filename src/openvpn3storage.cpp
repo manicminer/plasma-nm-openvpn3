@@ -117,6 +117,28 @@ std::optional<NetworkManager::Setting::SecretFlags> Openvpn3Storage::profileFlag
     return static_cast<NetworkManager::Setting::SecretFlags>(flags);
 }
 
+bool Openvpn3Storage::recordsProfileFlags(const NMStringMap &data)
+{
+    return isSecretMode(data) && data.contains(flagsKey());
+}
+
+bool Openvpn3Storage::hostRequestsSecrets(const NMStringMap &data)
+{
+    for (auto it = data.cbegin(); it != data.cend(); ++it) {
+        if (!it.key().endsWith(QLatin1String("-flags"))) {
+            continue;
+        }
+        // Deliberately not checked for being a number: the host does not
+        // check either, and QString::toInt() gives 0 -- None -- for anything
+        // it cannot read, so the host asks. Mirroring that is the point.
+        const auto flags = static_cast<NetworkManager::Setting::SecretFlagType>(it.value().toInt());
+        if (flags == NetworkManager::Setting::None || flags == NetworkManager::Setting::AgentOwned) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void Openvpn3Storage::writeLegacyProfile(NMStringMap &data, NMStringMap &secrets, const QString &profile)
 {
     secrets.remove(QLatin1String(NM_OPENVPN3_KEY_PROFILE));

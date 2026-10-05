@@ -86,6 +86,34 @@ QString readProfile(const NMStringMap &data, const NMStringMap &secrets);
  */
 std::optional<NetworkManager::Setting::SecretFlags> profileFlags(const NMStringMap &data);
 
+/**
+ * Whether @p data records the storage of its profile secret explicitly.
+ *
+ * NetworkManager reads an absent entry as @c None, so the profile is still
+ * readable; what it is not is *recorded*, and a connection editor asks for
+ * the secrets a connection records that it keeps. Everything written here
+ * records them. A connection written by something else may not.
+ */
+bool recordsProfileFlags(const NMStringMap &data);
+
+/**
+ * Whether the host's connection editor asks NetworkManager for the secrets of
+ * a VPN connection whose data is @p data.
+ *
+ * A reference implementation of a predicate that belongs to plasma-nm and is
+ * not exported by it: ConnectionEditorBase::initialize() requests secrets when
+ * any data entry whose key ends in @c -flags reads as @c None or
+ * @c AgentOwned. Faithful down to the detail that a value which is no number
+ * at all reads as 0, which is @c None, so the host asks -- this mirrors the
+ * host rather than improving on it.
+ *
+ * Pinned to plasma-nm 6.7.5, like everything else about the host here. It is
+ * used to decide whether an unavailable profile can be explained by the
+ * request never having been made, so being wrong about it would misdirect
+ * rather than mislead the save path.
+ */
+bool hostRequestsSecrets(const NMStringMap &data);
+
 /** Stores @p profile as a public data item and clears the secret layout. */
 void writeLegacyProfile(NMStringMap &data, NMStringMap &secrets, const QString &profile);
 

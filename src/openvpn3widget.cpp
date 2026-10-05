@@ -1157,7 +1157,7 @@ bool OpenVpn3SettingWidget::storedProfileIsUnreadable() const
 QString OpenVpn3SettingWidget::blockingProblem() const
 {
     if (storedProfileIsUnreadable()) {
-        return refreshedStatusText(m_availability);
+        return refreshedStatusText(m_availability, m_data);
     }
 
     const int choice = d->storage->currentData().toInt();
@@ -1229,18 +1229,35 @@ bool OpenVpn3SettingWidget::isValid() const
 
 // -- status, tabs, edits -----------------------------------------------------
 
-QString OpenVpn3SettingWidget::refreshedStatusText(Openvpn3Storage::Availability availability)
+QString OpenVpn3SettingWidget::refreshedStatusText(Openvpn3Storage::Availability availability, const NMStringMap &data)
 {
     switch (availability) {
     case Openvpn3Storage::Availability::Available:
         return i18n("The profile is stored with this connection.");
     case Openvpn3Storage::Availability::Absent:
         return i18n("No profile yet. Import an OpenVPN profile, or write one on the Profile Source page.");
-    case Openvpn3Storage::Availability::Locked:
-        return i18n(
+    case Openvpn3Storage::Availability::Locked: {
+        QString text = i18n(
             "The profile is kept with this connection's secrets and was not available here. "
             "Unlock the wallet and reopen this page, or import a profile to replace it. "
             "Saving is blocked so the stored profile is not lost.");
+        if (!Openvpn3Storage::recordsProfileFlags(data) && !Openvpn3Storage::hostRequestsSecrets(data)) {
+            // Not a locked wallet at all, most likely: a connection editor
+            // asks NetworkManager for the secrets a connection records that
+            // it keeps, and this one records none, so they may never have
+            // been requested. Only then -- a connection whose other entries
+            // already make the host ask got its secrets, and sending somebody
+            // off to change this one would be sending them to the wrong
+            // place. Nothing written here is ever missing it, so something
+            // else wrote this connection, and the fix is outside this editor.
+            text += QLatin1Char(' ')
+                + i18n("This connection does not record <icode>profile-flags</icode>, which is how it says that it keeps a profile at all, "
+                       "so the profile may never have been asked for. It was not written by this editor. "
+                       "<icode>nmcli connection modify &lt;name&gt; +vpn.data profile-flags=0</icode> records it as kept for all users, "
+                       "or <icode>profile-flags=1</icode> as kept in the user's wallet.");
+        }
+        return text;
+    }
     case Openvpn3Storage::Availability::Corrupt:
         return i18n("The stored profile cannot be read. Import a profile to replace it; saving is blocked until then.");
     case Openvpn3Storage::Availability::Unsupported:
@@ -1260,7 +1277,7 @@ void OpenVpn3SettingWidget::refreshStatus()
     // Why Save is unavailable, when it is: a disabled button with no reason
     // next to it is the same as no button. Otherwise, where the profile is.
     const QString problem = blockingProblem();
-    d->status->setText(problem.isEmpty() ? refreshedStatusText(m_availability) : problem);
+    d->status->setText(problem.isEmpty() ? refreshedStatusText(m_availability, m_data) : problem);
 
     const bool editable = !storedProfileIsUnreadable();
     d->tabs->setEnabled(editable);

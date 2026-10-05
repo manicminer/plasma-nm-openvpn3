@@ -1,0 +1,38 @@
+diff --git a/libs/editor/settings/connectionwidget.cpp b/libs/editor/settings/connectionwidget.cpp
+index 5b224d0dd..234282bbc 100644
+--- a/libs/editor/settings/connectionwidget.cpp
++++ b/libs/editor/settings/connectionwidget.cpp
+@@ -73,6 +73,9 @@ ConnectionWidget::~ConnectionWidget()
+ 
+ void ConnectionWidget::loadConfig(const NetworkManager::ConnectionSettings::Ptr &settings)
+ {
++    // Preserve connection properties this page does not expose. Only the
++    // deliberate UI setters below should replace the original values.
++    m_tmpSetting.fromMap({{QStringLiteral("connection"), settings->toMap().value(QStringLiteral("connection"))}});
+     if (settings->permissions().isEmpty()) {
+         m_widget->allUsers->setChecked(true);
+     } else {
+@@ -108,6 +111,7 @@ void ConnectionWidget::loadConfig(const NetworkManager::ConnectionSettings::Ptr
+ NMVariantMapMap ConnectionWidget::setting() const
+ {
+     NetworkManager::ConnectionSettings settings;
++    settings.fromMap(m_tmpSetting.toMap());
+ 
+     settings.setConnectionType(m_type);
+     settings.setAutoconnect(m_widget->autoconnect->isChecked());
+@@ -126,12 +130,11 @@ NMVariantMapMap ConnectionWidget::setting() const
+ 
+     if (m_widget->autoconnectVpn->isChecked() && m_widget->vpnCombobox->count() > 0) {
+         settings.setSecondaries(QStringList() << m_widget->vpnCombobox->itemData(m_widget->vpnCombobox->currentIndex()).toString());
++    } else if (m_widget->autoconnectVpn->isEnabled()) {
++        settings.setSecondaries({});
+     }
+ 
+-    const QString zone = m_widget->firewallZone->currentText();
+-    if (!zone.isEmpty()) {
+-        settings.setZone(zone);
+-    }
++    settings.setZone(m_widget->firewallZone->currentText());
+ 
+     if (m_widget->prioritySpin->isEnabled()) {
+         settings.setAutoconnectPriority(m_widget->prioritySpin->value());

@@ -1,0 +1,19 @@
+{
+    "KPlugin": {
+        "Authors": [
+            {
+                "Email": "tom@bamford.io",
+                "Name": "Tom Bamford"
+            }
+        ],
+        "Category": "",
+        "Description": "Compatible with OpenVPN servers, using the OpenVPN 3 Linux client",
+        "EnabledByDefault": true,
+        "Icon": "network-vpn",
+        "License": "GPL",
+        "Name": "OpenVPN 3",
+        "Version": "0.1",
+        "Website": "https://www.kde.org"
+    },
+    "X-NetworkManager-Services": "org.freedesktop.NetworkManager.openvpn3"
+}

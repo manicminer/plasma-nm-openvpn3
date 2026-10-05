@@ -1,0 +1,152 @@
+diff --git a/kcms/kcm_connections/kcm.cpp b/kcms/kcm_connections/kcm.cpp
+index c27b9478e..3d88651b5 100644
+--- a/kcms/kcm_connections/kcm.cpp
++++ b/kcms/kcm_connections/kcm.cpp
+@@ -39,6 +39,8 @@
+ 
+ // Qt
+ #include <QFileDialog>
++#include <QFileInfo>
++#include <QInputDialog>
+ #include <QMenu>
+ #include <QQmlContext>
+ #include <QQmlEngine>
+@@ -654,34 +656,52 @@ KCMNetworkmanagement::ImportResult KCMNetworkmanagement::importVpnFile(const QSt
+ #endif
+     }
+ 
+-    const QVector<KPluginMetaData> services = KPluginMetaData::findPlugins(QStringLiteral("plasma/network/vpn"));
+-    for (const KPluginMetaData &service : services) {
+-        const auto result = KPluginFactory::instantiatePlugin<VpnUiPlugin>(service);
++    // More than one plugin can claim the same extension -- .ovpn is read by
++    // both OpenVPN and OpenVPN 3 -- and which one the user meant is not ours
++    // to guess from the order the plugins happen to come back in.
++    const QList<KPluginMetaData> candidates = VpnUiPlugin::pluginsForFileExtension(fi.suffix());
+ 
+-        if (!result) {
+-            continue;
+-        }
+-
+-        std::unique_ptr<VpnUiPlugin> vpnPlugin(result.plugin);
+-
+-        if (vpnPlugin->supportedFileExtensions().contains(ext)) {
+-            qCDebug(PLASMA_NM_KCM_LOG) << "Found VPN plugin" << service.name() << ", type:" << service.value("X-NetworkManager-Services");
+-
+-            VpnUiPlugin::ImportResult result = vpnPlugin->importConnectionSettings(filename);
+-
+-            if (!result) {
+-                qWarning(PLASMA_NM_KCM_LOG) << "Failed to import" << filename << result.errorMessage();
+-                return ImportResult::fail(result.errorMessage());
+-            }
+-
+-            m_handler->addConnection(result.connection());
+-
+-            // qCDebug(PLASMA_NM_KCM_LOG) << "Adding imported connection under id:" << conId;
+-            return ImportResult::pass();
+-        }
++    if (candidates.isEmpty()) {
++        return ImportResult::fail(i18n("Unknown VPN type"));
+     }
+ 
+-    return ImportResult::fail(i18n("Unknown VPN type"));
++    KPluginMetaData chosen = candidates.constFirst();
++    if (candidates.size() > 1) {
++        QStringList names;
++        names.reserve(candidates.size());
++        for (const KPluginMetaData &service : std::as_const(candidates)) {
++            names.append(service.name());
++        }
++        bool accepted = false;
++        const QString answer = QInputDialog::getItem(widget(),
++                                                     i18nc("@title:window", "Import VPN Connection"),
++                                                     i18n("More than one VPN type can read %1. Which one should it be imported as?",
++                                                          QFileInfo(filename).fileName()),
++                                                     names,
++                                                     0,
++                                                     false,
++                                                     &accepted);
++        if (!accepted) {
++            return ImportResult::fail(i18n("No VPN type was chosen"));
++        }
++        chosen = candidates.at(names.indexOf(answer));
++    }
++
++    const auto result = KPluginFactory::instantiatePlugin<VpnUiPlugin>(chosen);
++    if (!result) {
++        return ImportResult::fail(result.errorString);
++    }
++    std::unique_ptr<VpnUiPlugin> vpnPlugin(result.plugin);
++    qCDebug(PLASMA_NM_KCM_LOG) << "Importing with VPN plugin" << chosen.name() << ", type:" << chosen.value("X-NetworkManager-Services");
++
++    const VpnUiPlugin::ImportResult imported = vpnPlugin->importConnectionSettings(filename);
++    if (!imported) {
++        qWarning(PLASMA_NM_KCM_LOG) << "Failed to import" << filename << imported.errorMessage();
++        return ImportResult::fail(imported.errorMessage());
++    }
++
++    m_handler->addConnection(imported.connection());
++    return ImportResult::pass();
+ }
+ 
+ void KCMNetworkmanagement::resetSelection()
+diff --git a/libs/editor/vpnuiplugin.cpp b/libs/editor/vpnuiplugin.cpp
+index 683f9c97b..704e90029 100644
+--- a/libs/editor/vpnuiplugin.cpp
++++ b/libs/editor/vpnuiplugin.cpp
+@@ -7,6 +7,8 @@
+ 
+ #include "vpnuiplugin.h"
+ 
++#include <memory>
++
+ #include <KLocalizedString>
+ #include <KPluginMetaData>
+ 
+@@ -27,6 +29,24 @@ QStringList VpnUiPlugin::supportedFileExtensions() const
+     return {};
+ }
+ 
++QList<KPluginMetaData> VpnUiPlugin::pluginsForFileExtension(const QString &extension)
++{
++    QList<KPluginMetaData> claiming;
++    const QList<KPluginMetaData> plugins = KPluginMetaData::findPlugins(QStringLiteral("plasma/network/vpn"));
++    for (const KPluginMetaData &metaData : plugins) {
++        const auto result = KPluginFactory::instantiatePlugin<VpnUiPlugin>(metaData);
++        if (!result) {
++            continue;
++        }
++        std::unique_ptr<VpnUiPlugin> plugin(result.plugin);
++        // The extensions are glob patterns, "*.ovpn" and the like.
++        if (plugin->supportedFileExtensions().contains(QLatin1String("*.") + extension)) {
++            claiming.append(metaData);
++        }
++    }
++    return claiming;
++}
++
+ KPluginFactory::Result<VpnUiPlugin> VpnUiPlugin::loadPluginForType(QObject *parent, const QString &serviceType)
+ {
+     auto filter = [serviceType](const KPluginMetaData &md) {
+diff --git a/libs/editor/vpnuiplugin.h b/libs/editor/vpnuiplugin.h
+index a1382da22..7868b4965 100644
+--- a/libs/editor/vpnuiplugin.h
++++ b/libs/editor/vpnuiplugin.h
+@@ -98,6 +98,18 @@ public:
+     virtual QMessageBox::StandardButtons suggestedAuthDialogButtons() const;
+ 
+     static KPluginFactory::Result<VpnUiPlugin> loadPluginForType(QObject *parent, const QString &serviceType);
++
++    /**
++     * Every installed VPN plugin that reads @p extension, in the order they
++     * were found.
++     *
++     * More than one can claim the same one -- @c .ovpn is read by both OpenVPN
++     * and OpenVPN 3 -- and which was meant is the user's to say, so the import
++     * asks rather than taking whichever plugin happened to come back first.
++     *
++     * @param extension without the dot, as QFileInfo::suffix() gives it.
++     */
++    static QList<KPluginMetaData> pluginsForFileExtension(const QString &extension);
+ };
+ 
+ #endif // PLASMA_NM_VPN_UI_PLUGIN_H

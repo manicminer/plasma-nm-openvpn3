@@ -47,3 +47,34 @@ PRIVATE
     KF6::WidgetsAddons
     Qt6Keychain::Qt6Keychain
 )
+
+add_library(plasmanetworkmanagement_openvpn3ui MODULE)
+target_sources(plasmanetworkmanagement_openvpn3ui PRIVATE
+    openvpn3.cpp
+    openvpn3.h
+)
+target_link_libraries(plasmanetworkmanagement_openvpn3ui
+    plasmanetworkmanagement_openvpn3_core
+    PlasmaNm::Editor
+    KF6::CoreAddons
+    KF6::I18n
+)
+
+# Exactly where the distribution's own VPN plugins are, and nowhere else: the
+# host finds them with KPluginMetaData, which looks under
+# <plugin dir>/plasma/network/vpn. Nothing of plasma-nm's is replaced.
+install(TARGETS plasmanetworkmanagement_openvpn3ui DESTINATION ${KDE_INSTALL_PLUGINDIR}/plasma/network/vpn)
+
+if(BUILD_TESTING)
+    # KPluginMetaData looks for the plugin under
+    # <QT_PLUGIN_PATH>/plasma/network/vpn, so mirror the built module there
+    # and the load test can find it without an install first. The
+    # distribution's own plugins are found alongside it on the default path,
+    # which is what makes the discovery assertions mean anything.
+    add_custom_command(TARGET plasmanetworkmanagement_openvpn3ui POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/bin/plasma/network/vpn
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                $<TARGET_FILE:plasmanetworkmanagement_openvpn3ui> ${CMAKE_BINARY_DIR}/bin/plasma/network/vpn/
+        COMMENT "Mirroring the openvpn3 VPN plugin where KPluginMetaData looks for it"
+    )
+endif()
