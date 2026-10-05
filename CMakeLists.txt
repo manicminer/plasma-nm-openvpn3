@@ -72,4 +72,8 @@ if(BUILD_TESTING)
     add_subdirectory(autotests)
 endif()
 
+# What the build resolved about its host, for the packaging scripts to put in
+# an artifact's provenance rather than guess at afterwards.
+configure_file(packaging/build-info.sh.in build-info.sh @ONLY)
+
 feature_summary(WHAT ALL FATAL_ON_MISSING_REQUIRED_PACKAGES)

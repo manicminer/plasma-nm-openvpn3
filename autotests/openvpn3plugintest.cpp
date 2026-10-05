@@ -78,6 +78,7 @@ private Q_SLOTS:
     void thePluginLoadsForItsServiceType();
     void thePluginProducesItsWidgets();
     void theTopLevelImportIsLeftToOpenVpn2();
+    void everyOtherInstalledVpnPluginStillLoads();
     void exportIsRefusedRatherThanLeakingTheKeys();
     void emptySecretLoadsFailClosed_data();
     void emptySecretLoadsFailClosed();
@@ -143,6 +144,35 @@ void Openvpn3PluginTest::theTopLevelImportIsLeftToOpenVpn2()
     // still does, so the import it answers is unchanged.
     QVERIFY2(servicesClaiming(u"ovpn"_s).contains(u"org.freedesktop.NetworkManager.openvpn"_s),
              "the distribution's OpenVPN 2 plugin is not installed, so this assertion proves nothing");
+}
+
+/**
+ * Installing this module does not stop any other VPN plugin from loading.
+ *
+ * Coexistence is not "the files are still there": a plugin that no longer
+ * instantiates is a VPN type that has quietly disappeared from the editor.
+ * Every installed plugin is therefore loaded, not looked for.
+ */
+void Openvpn3PluginTest::everyOtherInstalledVpnPluginStillLoads()
+{
+    const QList<KPluginMetaData> plugins = KPluginMetaData::findPlugins(u"plasma/network/vpn"_s);
+    QVERIFY2(plugins.size() >= 2,
+             "only this module was found, so nothing about living alongside the distribution's plugins was tested");
+
+    QStringList failures;
+    QStringList services;
+    for (const KPluginMetaData &metaData : plugins) {
+        const auto result = KPluginFactory::instantiatePlugin<VpnUiPlugin>(metaData);
+        if (!result) {
+            failures.append(metaData.fileName() + u": "_s + result.errorString);
+            continue;
+        }
+        delete result.plugin;
+        services.append(metaData.value(u"X-NetworkManager-Services"_s));
+    }
+    QVERIFY2(failures.isEmpty(), qPrintable(failures.join(u"; "_s)));
+    QVERIFY2(services.contains(u"org.freedesktop.NetworkManager.openvpn"_s), qPrintable(services.join(u", "_s)));
+    QVERIFY2(services.contains(QLatin1String(NM_DBUS_SERVICE_OPENVPN3)), qPrintable(services.join(u", "_s)));
 }
 
 void Openvpn3PluginTest::exportIsRefusedRatherThanLeakingTheKeys()

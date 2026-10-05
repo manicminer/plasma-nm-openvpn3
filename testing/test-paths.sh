@@ -62,8 +62,11 @@ mkdir -p "$good_root/plasma-nm-source"
 # The screenshots command likewise refuses to run before there is anything to
 # render, which is a different guard again.
 mkdir -p "$good_root/build/bin"
-touch "$good_root/build/bin/openvpn3screenshot"
+touch "$good_root/build/bin/openvpn3screenshot" "$good_root/build/bin/plasmanetworkmanagement_openvpn3ui.so"
 chmod +x "$good_root/build/bin/openvpn3screenshot"
+# ... and install-check refuses to run before there is an artifact to install.
+mkdir -p "$good_root/package" "$good_root/release-build/bin"
+touch "$good_root/package/plasma-nm-openvpn3-0.0.0-arch-x86_64-plasma-nm-0.0.0.tar.gz"
 # A symlink alias for the checkout: a string-only guard does not see through it.
 ln -s "$repo" "$work/repo-link"
 
@@ -152,6 +155,8 @@ run_case accept 'image name overrides' BUILD_ROOT="$good_root" IMAGE_BUILD=a-env
 run_case accept 'the test command' BUILD_ROOT="$good_root" -- test -R openvpn3
 run_case accept 'the source command' BUILD_ROOT="$good_root" -- source
 run_case accept 'the screenshots command' BUILD_ROOT="$good_root" -- screenshots
+run_case accept 'the package command' BUILD_ROOT="$good_root" -- package
+run_case accept 'the install-check command' BUILD_ROOT="$good_root" -- install-check
 
 echo
 echo "# a command with nothing to run yet is refused rather than half-run"
@@ -159,6 +164,15 @@ run_case reject 'build before the pinned plasma-nm source was fetched' \
     BUILD_ROOT="$work/scratch/no-source-yet" -- build
 run_case reject 'screenshots before anything was built' \
     BUILD_ROOT="$work/scratch/not-built-yet" -- screenshots
+run_case reject 'package before the pinned plasma-nm source was fetched' \
+    BUILD_ROOT="$work/scratch/not-built-yet" -- package
+run_case reject 'install-check before anything was packaged' \
+    BUILD_ROOT="$work/scratch/not-packaged-yet" -- install-check
+mkdir -p "$work/scratch/two-artifacts/package"
+touch "$work/scratch/two-artifacts/package/plasma-nm-openvpn3-0.0.0-arch-x86_64-plasma-nm-0.0.0.tar.gz" \
+      "$work/scratch/two-artifacts/package/plasma-nm-openvpn3-0.0.1-arch-x86_64-plasma-nm-0.0.0.tar.gz"
+run_case reject 'install-check with more than one artifact to choose from' \
+    BUILD_ROOT="$work/scratch/two-artifacts" -- install-check
 
 echo
 echo "# companion inputs are validated too"

@@ -17,6 +17,11 @@ FROM archlinux:latest
 # should fail here, loudly and early, rather than during the build.
 ARG PLASMA_NM_VERSION=6.7.5
 
+# qt6-webengine and openconnect are plasma-nm's optional dependencies, and the
+# distribution's package ships VPN plugins that need them. They are installed
+# so that the host really is a complete one: a plugin that cannot load for want
+# of a runtime dependency is indistinguishable, from a test, from a plugin this
+# module broke, and the point of testing coexistence is to tell those apart.
 RUN pacman -Syu --noconfirm --needed \
         base-devel cmake ninja git pkgconf \
         qt6-base qt6-tools \
@@ -24,7 +29,7 @@ RUN pacman -Syu --noconfirm --needed \
         kcoreaddons ki18n kwidgetsaddons kcolorscheme kcompletion \
         networkmanager-qt modemmanager-qt \
         qtkeychain-qt6 networkmanager openssl \
-        plasma-nm \
+        plasma-nm qt6-webengine openconnect \
     && pacman -Scc --noconfirm
 
 # Fail the image build, not the module build, when the distribution's plasma-nm

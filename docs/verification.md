@@ -30,6 +30,8 @@ testing/run.sh build
 testing/run.sh test
 testing/run.sh test -R openvpn3 -V
 testing/run.sh screenshots   # not a test: renders the editor's pages for review
+testing/run.sh package
+testing/run.sh install-check
 ```
 
 `BUILD_ROOT` is a dedicated scratch directory the harness owns: it creates it,
@@ -53,6 +55,44 @@ defaults to `Debug`, `JOBS` to 2 and `MEMORY` to `8g`; containers run
 unprivileged, with `--cap-drop ALL`, `--security-opt no-new-privileges`, no
 swap beyond that memory limit and — for everything but `images` and `source` —
 `--network none`.
+
+## The release artifacts, and what checks them
+
+`run.sh package` writes two things into `$BUILD_ROOT/package`, with a
+`SHA256SUMS` over both:
+
+* `plasma-nm-openvpn3-<version>.tar.gz` — the repository at one commit. It is
+  what travels, and it builds anywhere the pin can be satisfied.
+* `plasma-nm-openvpn3-<version>-<distro>-<arch>-plasma-nm-<host version>.tar.gz`
+  — the module and nothing else, good for exactly the plasma-nm named in its
+  own filename. The name is not decoration: plasma-nm's editor library has no
+  versioned ABI, so a module built against another version loads and then
+  misbehaves. The archive carries a `PROVENANCE.txt` saying what it was built
+  against — source commit, plasma-nm package version, pin, build image digest,
+  compiler, Qt and KF versions — its own `SHA256SUMS`, and the licence texts.
+
+Both are built from the commit's own timestamp rather than the build's, so the
+same commit packs to the same bytes: two consecutive `run.sh package` runs
+produce byte-identical archives.
+
+`run.sh install-check` then installs the binary archive the way its
+`PROVENANCE.txt` tells a user to, inside a throwaway container, and checks what
+that did:
+
+* every file in the archive matches its checksum;
+* exactly one file lands in the filesystem, and it is the VPN plugin;
+* no path it installs is owned by a distribution package, and `pacman -Qkk`
+  reports no distribution-owned file changed;
+* the **installed** module is what loads — the test binaries are copied away
+  from the build tree first, so the copy the ordinary test run uses cannot be
+  what answers;
+* the VPN plugins that were already installed, OpenVPN 2 and OpenConnect, are
+  still there and still load alongside it;
+* and removing that one file restores the host exactly.
+
+It runs as root because installing into `/usr` is the thing being checked, in a
+container with every capability dropped and no network, and the script refuses
+to run outside a container at all.
 
 ## These images are not reproducible
 

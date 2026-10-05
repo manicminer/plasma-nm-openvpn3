@@ -21,8 +21,8 @@ HARNESS_REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 command=${1:-test}
 shift || true
 case "$command" in
-    images|source|build|test|screenshots) ;;
-    *) echo 'Usage: run.sh images|source|build|test|screenshots [arguments]' >&2; exit 2 ;;
+    images|source|build|test|screenshots|package|install-check) ;;
+    *) echo 'Usage: run.sh images|source|build|test|screenshots|package|install-check [arguments]' >&2; exit 2 ;;
 esac
 
 : "${BUILD_ROOT:?Set BUILD_ROOT to a dedicated scratch directory outside the checkout}"
@@ -40,6 +40,8 @@ memory=${MEMORY:-8g}
 
 plasma_nm_source="$build_root/plasma-nm-source"
 build_dir="$build_root/build"
+release_build_dir="$build_root/release-build"
+package_dir="$build_root/package"
 
 # Everything that is not the image build runs unprivileged, with no network, no
 # added capabilities and no way to gain any.
@@ -115,6 +117,65 @@ case "$command" in
         mkdir -p "$build_root/home"
         contained -e QT_QPA_PLATFORM=offscreen -w /work/build "$image_test" \
             ctest --output-on-failure "$@"
+        ;;
+    package)
+        # Builds first, on purpose. An artifact's provenance names the commit
+        # it came from, and the only way that is true rather than plausible is
+        # for the module to be compiled from that checkout in the same breath;
+        # packaging whatever happened to be in the build directory would let it
+        # name a commit it was not built from.
+        if [[ ! -f "$plasma_nm_source/CMakeLists.txt" ]]; then
+            echo "No plasma-nm source at $plasma_nm_source; run 'run.sh source' first" >&2
+            exit 2
+        fi
+        # From nothing, in a directory of its own. Reusing the ordinary build
+        # tree would let objects compiled in one image be packaged with another
+        # image's identity recorded, and a stale CMake cache remembers the
+        # compiler it first found. The package directory is emptied too, so
+        # what comes out is exactly what this run produced and install-check
+        # cannot pick up something older.
+        rm -rf -- "${release_build_dir:?}" "${package_dir:?}"
+        mkdir -p "$release_build_dir" "$package_dir" "$build_root/home"
+        # By ID, not by tag, and resolved once: what goes in the provenance is
+        # then the image the compiler actually ran in, whatever the tag points
+        # at afterwards.
+        image_id=$(docker image inspect --format '{{.Id}}' "$image_build")
+        contained -w /work/release-build "$image_id" sh -ec '
+                build_type=$1; jobs=$2; shift 2
+                cmake -S /src -B /work/release-build -G Ninja \
+                    -DCMAKE_BUILD_TYPE="$build_type" \
+                    -DCMAKE_INSTALL_PREFIX=/usr \
+                    -DBUILD_TESTING=ON \
+                    -DPLASMA_NM_SOURCE_DIR=/work/plasma-nm-source
+                cmake --build /work/release-build -- -j"$jobs"
+            ' sh "${RELEASE_BUILD_TYPE:-RelWithDebInfo}" "$jobs"
+        contained -e BUILD_IMAGE_ID="$image_id" -e ALLOW_DIRTY_RELEASE="${ALLOW_DIRTY_RELEASE:-}" \
+            -w /work "$image_id" \
+            /src/packaging/make-release.sh /work/release-build /work/package
+        ;;
+    install-check)
+        # Root, because installing into /usr is the thing being checked, and
+        # inside a throwaway container with every capability dropped -- never
+        # on the host. The script refuses to run outside one.
+        # Exactly one, or none: picking one of several would mean verifying
+        # whichever sorted last rather than the one that was just built.
+        mapfile -t artifacts < <(find "$package_dir" -maxdepth 1 -name 'plasma-nm-openvpn3-*-*-*-plasma-nm-*.tar.gz' | LC_ALL=C sort)
+        if [[ ${#artifacts[@]} -eq 0 ]]; then
+            echo "No binary artifact in $package_dir; run 'run.sh package' first" >&2
+            exit 2
+        elif [[ ${#artifacts[@]} -gt 1 ]]; then
+            printf 'More than one binary artifact in %s; run "run.sh package" to rebuild just one:\n' "$package_dir" >&2
+            printf '  %s\n' "${artifacts[@]}" >&2
+            exit 2
+        fi
+        artifact=${artifacts[0]}
+        mkdir -p "$build_root/home"
+        docker run --rm --network none --cap-drop ALL --security-opt no-new-privileges \
+            --memory "$memory" --memory-swap "$memory" \
+            --user 0:0 -e HOME=/root \
+            -v "$HARNESS_REPO:/src:ro" -v "$build_root:/work" \
+            -w /work "$image_test" \
+            /src/packaging/verify-install.sh "/work/package/$(basename "$artifact")" /work/release-build
         ;;
     screenshots)
         # Not a test: renders the editor's pages to PNGs for review.
