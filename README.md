@@ -5,19 +5,46 @@ built as a separate module that loads into an **unmodified distribution
 plasma-nm**.
 
 It edits `org.freedesktop.NetworkManager.openvpn3` connections: general fields,
-the full ordered directives table and a raw profile source view, with
-self-contained profiles stored either in the user's wallet or as a
-NetworkManager system secret. Importing an existing `.ovpn` profile goes
-through the OpenVPN 3 backend's own libnm importer, so what Plasma stores is
-what the backend will read.
+the full ordered directives table and a raw profile source view, all three
+views of one profile document. A profile carries its private key inlined, so
+every new and every imported connection keeps it where only an agent or an
+explicit request can get at it: the user's wallet, or a NetworkManager
+system-owned secret. The older layout — the profile as a public connection data
+item, which NetworkManager hands to every client allowed to read the
+connection's settings — is offered only to a connection that already uses one,
+so that opening such a connection and saving it does not move its keys without
+being asked; moving it is a deliberate choice on the editor page. Importing an
+existing `.ovpn` profile goes through the OpenVPN 3 backend's own libnm
+importer, so what Plasma stores is what the backend will read.
 
-This repository contains the Plasma editor only. It needs the companion
-NetworkManager OpenVPN 3 backend at runtime — see
-[Backend requirements](#backend-requirements) — and does not modify, replace or
+This repository contains the Plasma editor only. It does not modify, replace or
 ship any part of plasma-nm.
 
-> **Status:** initial release in progress. See
-> [docs/limitations.md](docs/limitations.md) for what this does not do.
+> **Read [docs/backend.md](docs/backend.md) first.** This module needs a
+> NetworkManager OpenVPN 3 backend change that is **not upstream yet**; against
+> the released backend, connections it creates will not activate.
+
+| | |
+| --- | --- |
+| What it does not do | [docs/limitations.md](docs/limitations.md) |
+| The backend it needs | [docs/backend.md](docs/backend.md) |
+| How it is verified | [docs/verification.md](docs/verification.md) |
+| Moving to another plasma-nm | [docs/repinning.md](docs/repinning.md) |
+| Patches for plasma-nm itself | [host-patches/](host-patches/) |
+
+## Compatibility
+
+| | Supported |
+| --- | --- |
+| plasma-nm | **6.7.5 only** — see below, and [docs/repinning.md](docs/repinning.md) |
+| Verified distribution | Arch Linux, `plasma-nm 6.7.5-1`, x86_64 |
+| Qt / KF6 | 6.11.2 / 6.30.0 as verified; ≥ 6.10 / ≥ 6.26 required |
+| NetworkManager | `libnm` > 1.4 |
+| Backend | `network-manager-openvpn3` with pull request #1 ([docs/backend.md](docs/backend.md)) |
+
+Other distributions are expected to work where their plasma-nm is 6.7.5; none
+has been verified, and the build refuses to configure against any other
+version, so a wrong one is a failed build rather than a crash later.
 
 ## Why it needs plasma-nm's source to build
 
@@ -39,14 +66,11 @@ This module deals with that by being pinned, verified and fail-closed:
   present.
 * The build asks the distribution's package database which package owns the
   installed `libplasmanm_editor.so` and what version it is, and **refuses to
-  configure** unless that is the pinned version.
+  configure** unless that is exactly the pinned version.
 * Everything is linked with `-Wl,--no-undefined`, so a symbol that moved is a
   failed build rather than a crash at runtime.
 * No upstream source is vendored here, nothing is downloaded while building
   once the source tree is present, and nothing is ever downloaded at runtime.
-
-Supported host: **plasma-nm 6.7.5**. Other versions need a re-pin; see
-[docs/repinning.md](docs/repinning.md).
 
 ## Building
 
@@ -72,6 +96,53 @@ cmake -S . -B build -DPLASMA_NM_SOURCE_DIR=/path/to/plasma-nm
 
 Its digests are verified either way.
 
+## Installing
+
+```bash
+sudo cmake --install build
+```
+
+That installs exactly one file,
+`<prefix>/lib/qt6/plugins/plasma/network/vpn/plasmanetworkmanagement_openvpn3ui.so`,
+next to the distribution's own VPN plugins. Nothing of plasma-nm's is replaced
+or shadowed, and removing that one file removes the module.
+
+A release also publishes a binary archive of that single file, for the
+distribution and plasma-nm version in its own filename, with its provenance and
+checksums beside it. It is good for that plasma-nm and nothing else; the
+archive's own `PROVENANCE.txt` says so and says what it was built against.
+
+Log out and back in, or restart the connection editor, and **OpenVPN 3**
+appears in the list of VPN types — provided the backend is installed, since
+that is what provides the service file the type is discovered from.
+
+## Using it
+
+Add a VPN connection of type **OpenVPN 3**, then either write a profile on the
+**Profile Source** page or use **Import Profile…** on the editor page to read
+an existing `.ovpn` file.
+
+**Import Profile… is the way in.** This module deliberately does not appear in
+the connection editor's own top-level *Import VPN connection*, because on a
+stock host that would mean sometimes stealing an OpenVPN 2 import; the reason
+is in [docs/limitations.md](docs/limitations.md). Importing from the editor
+page is also the only path that can ask where the profile should be kept.
+
+**Profile storage** decides who can read the private keys: the user's wallet
+(the default), or NetworkManager for all users, which is what an unattended
+connection that must come up with nobody logged in needs. A connection that
+already keeps its profile in the older public layout also offers that, labelled
+as unprotected, and keeps it until you choose otherwise — the editor does not
+move somebody's stored keys as a side effect of opening the page, and it does
+not offer that choice to anything else. The editor refuses to
+save a wallet-stored profile when there is no wallet to store it in, rather than
+quietly storing it somewhere else, and refuses to save at all when it was not
+given the profile it is supposed to be editing.
+
+There is no export. An OpenVPN 3 profile has the private key inlined in it, and
+when it is kept with the connection's secrets that is precisely so it never
+reaches a plain file.
+
 ## Testing
 
 ```bash
@@ -89,20 +160,15 @@ testing/run.sh images        # once; the only step that installs packages
 testing/run.sh source
 testing/run.sh build
 testing/run.sh test
+testing/run.sh package
+testing/run.sh install-check
 ```
 
+`BACKEND_ROOT` is optional and worth having: every assertion that needs the
+real libnm importer is guarded, so **a run with no skips is the evidence that
+the real importer was exercised**, and a run without the backend is not one.
 See [docs/verification.md](docs/verification.md) for what those containers are
 and are not allowed to do.
-
-## Backend requirements
-
-At runtime this module needs the NetworkManager OpenVPN 3 backend, which
-provides the `org.freedesktop.NetworkManager.openvpn3` service, its
-`nm-openvpn3-service.name` file and the libnm editor plugin the importer calls:
-<https://github.com/AlexeySetevoi/network-manager-openvpn3>.
-
-Self-contained profiles stored in NetworkManager secrets — the default storage
-here — need backend support that is **not upstream yet**.
 
 ## Licensing
 
@@ -114,4 +180,6 @@ The pinned plasma-nm headers it compiles against are
 `LGPL-2.1-only OR LGPL-3.0-only OR LicenseRef-KDE-Accepted-LGPL`, copyright
 their authors (Will Stephenson, Lukáš Tinkl, Jan Grulich and the KDE
 community). They are read from a verified upstream source tree at build time
-and are not redistributed by this project.
+and are not redistributed by this project. The diffs in
+[`host-patches/`](host-patches/) touch files under the same licence and are
+documented there.

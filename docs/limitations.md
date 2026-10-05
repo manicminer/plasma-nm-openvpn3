@@ -169,3 +169,34 @@ An OpenVPN 3 profile is self-contained: it has the private key and the
 certificates inlined in it, and when it is kept with the connection's secrets
 that is precisely so it never reaches a plain file. There is no export, rather
 than an export that quietly leaks one.
+
+## What has not been shown
+
+Everything in this repository is a component test. They are run against the
+distribution's own plasma-nm, against the backend's own libnm importer, and
+against the module as it is actually installed — but there are things they do
+not reach, and it is worth saying which.
+
+* **No run has combined this editor, a wallet and a live NetworkManager.**
+  The tests have no session bus with a real secret store on it and no
+  NetworkManager to talk to. Wallet availability is checked against real
+  isolated buses with and without a provider, and the providers there are
+  synthetic. Saving to a wallet, activating the connection and getting traffic
+  has not been done as one sequence anywhere.
+* **No live `GetSecrets` round trip.** The condition under which the host asks
+  NetworkManager for a connection's secrets is reimplemented here and compared
+  against what this module writes; the request itself is not made.
+* **The KCM's save error propagation is not covered end to end.** These tests
+  drive the editor page and the host's connection editor, not the whole
+  configuration module.
+* **The backend's own end-to-end evidence is not here.** See
+  [backend.md](backend.md).
+* **A separate real-KWallet probe, run elsewhere, did not pass cleanly.** It
+  verified an 8,172-byte synthetic secret map through write, independent read
+  and a daemon restart, and its cancellation checks *failed*: cancelling an
+  unlock — including after a wrong password — returned QtKeychain `NoError`
+  with empty data. That suite finished 56 assertions passed, 2 failed, not
+  all-green. This module treats an empty or missing profile reply as
+  unavailable, keeps the original map, and cannot save an empty replacement,
+  which is what makes that behaviour survivable rather than fixed. The probe
+  is not part of this repository.
