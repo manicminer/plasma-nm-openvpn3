@@ -1,0 +1,68 @@
+# SPDX-FileCopyrightText: 2026 Tom Bamford <tom@bamford.io>
+# SPDX-License-Identifier: GPL-2.0-only OR GPL-3.0-only OR LicenseRef-KDE-Accepted-GPL
+
+cmake_minimum_required(VERSION 3.16)
+
+project(plasma-nm-openvpn3 VERSION 0.1.0)
+
+# The same minimums plasma-nm 6.7.5 itself requires: this module is loaded into
+# that build's process, so there is nothing to gain from asking for less.
+set(QT_MIN_VERSION "6.10.0")
+set(KF6_MIN_VERSION "6.26.0")
+set(KDE_COMPILERSETTINGS_LEVEL "5.82")
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+find_package(ECM ${KF6_MIN_VERSION} REQUIRED NO_MODULE)
+set(CMAKE_MODULE_PATH ${ECM_MODULE_PATH} ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
+
+include(KDEInstallDirs)
+include(KDECMakeSettings)
+include(KDECompilerSettings NO_POLICY_SCOPE)
+include(ECMQtDeclareLoggingCategory)
+include(ECMDeprecationSettings)
+include(FeatureSummary)
+
+find_package(Qt6 ${QT_MIN_VERSION} CONFIG REQUIRED COMPONENTS
+    Core
+    DBus
+    Gui
+    Widgets
+)
+find_package(Qt6Keychain 0.16.0 CONFIG REQUIRED)
+find_package(KF6 ${KF6_MIN_VERSION} REQUIRED
+    CoreAddons
+    I18n
+    NetworkManagerQt
+    WidgetsAddons
+)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(NETWORKMANAGER IMPORTED_TARGET libnm>1.4.0 REQUIRED)
+
+# Deliberately the same relaxations plasma-nm's own build makes, because this
+# code is compiled as part of that project upstream and is kept source
+# compatible with it: a translation unit that builds here has to build there.
+ecm_set_disabled_deprecation_versions(QT 5.15 KF 6.4.0)
+add_definitions(-DQT_NO_URL_CAST_FROM_STRING)
+remove_definitions(-DQT_NO_CAST_FROM_ASCII -DQT_NO_CAST_FROM_BYTEARRAY)
+
+# A module that resolves every symbol at link time cannot fail to dlopen for a
+# symbol that moved, which is the only ABI drift that can be detected at all
+# against a library with no versioned ABI. See cmake/PlasmaNmHost.cmake.
+string(APPEND CMAKE_SHARED_LINKER_FLAGS " -Wl,--no-undefined")
+string(APPEND CMAKE_MODULE_LINKER_FLAGS " -Wl,--no-undefined")
+
+include(PlasmaNmHost)
+
+if(BUILD_TESTING)
+    enable_testing()
+    add_test(NAME plasma-nm-source-verification
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/test-plasma-nm-source.sh)
+    set_tests_properties(plasma-nm-source-verification PROPERTIES
+        ENVIRONMENT "CMAKE=${CMAKE_COMMAND};PLASMA_NM_SOURCE_DIR=${_plasma_nm_source}")
+    add_test(NAME plasma-nm-version-parsing
+             COMMAND ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_SOURCE_DIR}/scripts/test-version-parsing.cmake)
+endif()
+
+feature_summary(WHAT ALL FATAL_ON_MISSING_REQUIRED_PACKAGES)
