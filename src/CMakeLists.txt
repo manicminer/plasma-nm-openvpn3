@@ -17,6 +17,8 @@ target_sources(plasmanetworkmanagement_openvpn3_core PRIVATE
     openvpn3directiveswidget.h
     openvpn3widget.cpp
     openvpn3widget.h
+    openvpn3auth.cpp
+    openvpn3auth.h
     nm-openvpn3-service.h
 )
 ecm_qt_declare_logging_category(plasmanetworkmanagement_openvpn3_core

@@ -20,6 +20,7 @@ ecm_add_tests(
 ecm_add_tests(
     openvpn3directivestest.cpp
     openvpn3widgettest.cpp
+    openvpn3authtest.cpp
     NAME_PREFIX openvpn3-
     GUI
     LINK_LIBRARIES Qt::Test Qt::Widgets Qt::DBus KF6::CoreAddons plasmanetworkmanagement_openvpn3_core
