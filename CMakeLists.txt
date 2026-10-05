@@ -69,6 +69,10 @@ if(BUILD_TESTING)
     # failed assertion rather than a damaged host. See testing/test-paths.sh.
     add_test(NAME harness-path-guards
              COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/testing/test-paths.sh)
+    # The release gate runs on a tag, which is the worst moment to find a bug
+    # in it; this is how it is rehearsed without one.
+    add_test(NAME release-gate
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/packaging/test-check-release.sh)
     add_subdirectory(autotests)
 endif()
 

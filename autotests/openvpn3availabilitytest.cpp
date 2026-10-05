@@ -7,12 +7,28 @@
 #include <QTemporaryDir>
 #include <QTest>
 
+#include "openvpn3importer.h"
 #include "openvpn3storage.h"
 #include "openvpn3widget.h"
 #include "passwordfield.h"
 #include "vpnuiplugin.h"
 #include <libnm/NetworkManager.h>
 #include <memory>
+
+namespace
+{
+QString dataPath(const QString &name)
+{
+    return QString::fromLatin1(OPENVPN3_TEST_DATA_DIR) + QLatin1Char('/') + name;
+}
+
+/** True when the openvpn3 backend's libnm plugin is available to libnm. */
+bool backendAvailable()
+{
+    static const bool available = Openvpn3Importer::fromFile(dataPath(QStringLiteral("office.ovpn"))).isValid();
+    return available;
+}
+}
 
 class Openvpn3AvailabilityTest : public QObject
 {
@@ -29,6 +45,11 @@ private Q_SLOTS:
     void providerReachability()
     {
         QFETCH(int, mode);
+        // Where a provider is advertised the child goes on to import through
+        // the backend's own libnm plugin, so those rows need it installed.
+        if (mode >= 2 && !backendAvailable()) {
+            QSKIP("the openvpn3 backend's libnm plugin is not installed");
+        }
         QTemporaryDir dir;
         QVERIFY(dir.isValid());
         QFile service(dir.filePath(QStringLiteral("org.freedesktop.secrets.service")));

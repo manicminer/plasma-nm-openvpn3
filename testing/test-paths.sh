@@ -176,7 +176,8 @@ run_case reject 'install-check with more than one artifact to choose from' \
 
 echo
 echo "# companion inputs are validated too"
-run_case reject 'images without BACKEND_ROOT' BUILD_ROOT="$good_root" -- images
+run_case accept 'images without BACKEND_ROOT, which only costs the importer tests' \
+    BUILD_ROOT="$good_root" -- images
 run_case reject 'images with a BACKEND_ROOT that does not exist' \
     BUILD_ROOT="$good_root" BACKEND_ROOT="$work/absent" -- images
 run_case reject 'a BACKEND_ROOT inside the directory build overwrites' \

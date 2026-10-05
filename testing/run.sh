@@ -56,18 +56,30 @@ contained() {
 
 case "$command" in
     images)
-        : "${BACKEND_ROOT:?Set BACKEND_ROOT to the companion backend checkout (read only)}"
-        backend_root=$(require_existing_dir BACKEND_ROOT "$BACKEND_ROOT")
-        require_outside BACKEND_ROOT "$backend_root" BUILD_ROOT/build "$build_dir"
-        require_outside BACKEND_ROOT "$backend_root" BUILD_ROOT/plasma-nm-source "$plasma_nm_source"
+        # BACKEND_ROOT is optional but wanted: without it the importer tests
+        # skip rather than exercise the real libnm importer, which is the
+        # difference between testing this code and testing an assumption about
+        # it. The run says which it was.
+        backend_root=
+        backend_revision=none
+        if [[ -n ${BACKEND_ROOT:-} ]]; then
+            backend_root=$(require_existing_dir BACKEND_ROOT "$BACKEND_ROOT")
+            require_outside BACKEND_ROOT "$backend_root" BUILD_ROOT/build "$build_dir"
+            require_outside BACKEND_ROOT "$backend_root" BUILD_ROOT/plasma-nm-source "$plasma_nm_source"
+        else
+            echo 'BACKEND_ROOT is not set: building a test image without the OpenVPN 3 backend.' >&2
+            echo 'The importer tests will skip. Set it to a backend checkout to exercise them.' >&2
+        fi
 
         # The image build context is a temporary directory this script creates
         # and removes, so nothing under BUILD_ROOT is deleted to make room.
         context=$(mktemp -d "${TMPDIR:-/tmp}/plasma-nm-openvpn3-context-XXXXXX")
         trap 'rm -rf -- "$context"' EXIT
         mkdir -p "$context/backend-src"
-        rsync -a --exclude /.git/ --exclude /.hermes/ "$backend_root/" "$context/backend-src/"
-        backend_revision=$(git -C "$backend_root" rev-parse HEAD 2>/dev/null || echo unknown)
+        if [[ -n $backend_root ]]; then
+            rsync -a --exclude /.git/ --exclude /.hermes/ "$backend_root/" "$context/backend-src/"
+            backend_revision=$(git -C "$backend_root" rev-parse HEAD 2>/dev/null || echo unknown)
+        fi
         cp "$HARNESS_REPO/testing/Dockerfile.test" "$context/Dockerfile.test"
 
         # BuildKit ignores per-build resource limits, so these are a request

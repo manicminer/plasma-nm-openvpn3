@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: 2026 Tom Bamford <tom@bamford.io>
+# SPDX-License-Identifier: GPL-2.0-only OR GPL-3.0-only OR LicenseRef-KDE-Accepted-GPL
+#
+# Every push to main and every pull request: the same build, test, package and
+# install-check a release goes through, publishing nothing.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    uses: ./.github/workflows/build.yml
+    with:
+      # Repository variables, so the backend this is tested against can be
+      # changed without editing a workflow. Unset means the importer tests
+      # skip, and the job summary says so.
+      backend-repository: ${{ vars.BACKEND_REPOSITORY }}
+      backend-ref: ${{ vars.BACKEND_REF }}

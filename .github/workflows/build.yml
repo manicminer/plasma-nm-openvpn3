@@ -1,0 +1,106 @@
+# SPDX-FileCopyrightText: 2026 Tom Bamford <tom@bamford.io>
+# SPDX-License-Identifier: GPL-2.0-only OR GPL-3.0-only OR LicenseRef-KDE-Accepted-GPL
+#
+# The build, test and package path. Called by ci.yml on every push and by
+# release.yml on a tag, so that what a release is built by is what every
+# ordinary run has already exercised -- a release workflow nobody runs until
+# the day of the release is a workflow nobody has tested.
+name: Build
+
+on:
+  workflow_call:
+    inputs:
+      backend-repository:
+        description: >-
+          Checkout of the NetworkManager OpenVPN 3 backend, whose libnm plugin
+          the importer tests use. Without it those tests skip, which the
+          summary says.
+        type: string
+        default: ''
+      backend-ref:
+        type: string
+        default: ''
+      artifact-retention-days:
+        type: number
+        default: 14
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and test against a stock plasma-nm
+    runs-on: ubuntu-latest
+    env:
+      # Outside the checkout, which is what testing/paths.sh insists on, and
+      # on the runner's own scratch filesystem.
+      BUILD_ROOT: ${{ github.workspace }}/../openvpn3-build
+    steps:
+      - name: Check out the module
+        uses: actions/checkout@v4
+        with:
+          # describe() names the artifacts, so the tags have to be here.
+          fetch-depth: 0
+
+      - name: Check out the OpenVPN 3 backend
+        id: backend
+        if: inputs.backend-repository != ''
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.backend-repository }}
+          ref: ${{ inputs.backend-ref }}
+          path: backend
+
+      - name: Report whether the importer tests will run for real
+        run: |
+          if [ -f backend/meson.build ]; then
+            echo "BACKEND_ROOT=$GITHUB_WORKSPACE/backend" >> "$GITHUB_ENV"
+            echo "The OpenVPN 3 backend is present: the importer tests run against the real libnm importer." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "The OpenVPN 3 backend is **not** present: the importer tests will skip." >> "$GITHUB_STEP_SUMMARY"
+            echo "A run with no skips is the evidence that the real importer was exercised; this run is not one." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Build the container images
+        run: testing/run.sh images
+
+      - name: Fetch and verify the pinned plasma-nm source
+        run: testing/run.sh source
+
+      - name: Build
+        run: testing/run.sh build
+
+      - name: Test
+        run: testing/run.sh test
+
+      - name: Package
+        run: testing/run.sh package
+
+      - name: Verify what the artifact installs
+        run: testing/run.sh install-check
+
+      - name: Record what this was built against
+        run: |
+          {
+            echo '## Artifacts'
+            echo
+            echo '```'
+            cat "$BUILD_ROOT/package/SHA256SUMS"
+            echo '```'
+            echo
+            echo '## Provenance'
+            echo
+            echo '```'
+            tar -xzOf "$BUILD_ROOT"/package/plasma-nm-openvpn3-*-*-*-plasma-nm-*.tar.gz \
+                --wildcards '*/PROVENANCE.txt' | sed -n '1,12p'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: plasma-nm-openvpn3-artifacts
+          path: ${{ env.BUILD_ROOT }}/package/
+          retention-days: ${{ inputs.artifact-retention-days }}
+          if-no-files-found: error

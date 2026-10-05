@@ -1,0 +1,62 @@
+# SPDX-FileCopyrightText: 2026 Tom Bamford <tom@bamford.io>
+# SPDX-License-Identifier: GPL-2.0-only OR GPL-3.0-only OR LicenseRef-KDE-Accepted-GPL
+#
+# A tag: the same build, test, package and install-check as every other run,
+# and then the artifacts attached to a GitHub release.
+#
+# Nothing here creates a tag. Pushing one is a deliberate act and stays one.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    uses: ./.github/workflows/build.yml
+    with:
+      backend-repository: ${{ vars.BACKEND_REPOSITORY }}
+      backend-ref: ${{ vars.BACKEND_REF }}
+      artifact-retention-days: 90
+
+  publish:
+    name: Attach the artifacts to the release
+    needs: build
+    # A tag is what a release is made from; a manual run builds and checks and
+    # publishes nothing.
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the module
+        uses: actions/checkout@v4
+
+      - name: Download what the build produced
+        uses: actions/download-artifact@v4
+        with:
+          name: plasma-nm-openvpn3-artifacts
+          path: artifacts
+
+      # Everything this decides lives in a script, so that it can be rehearsed
+      # without pushing a tag: the tag has to be the version that was built,
+      # the artifacts have to be there, and they have to match their own
+      # checksums. packaging/test-check-release.sh is its regression suite and
+      # runs in CI with everything else.
+      - name: Check the tag against what was built, and write the notes
+        run: packaging/check-release.sh "$GITHUB_REF_NAME" artifacts release-notes.md
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file release-notes.md \
+            --verify-tag \
+            artifacts/*.tar.gz artifacts/SHA256SUMS

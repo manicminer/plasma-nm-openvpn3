@@ -18,12 +18,21 @@ RUN pacman -Sy --noconfirm --needed meson python ttf-dejavu noto-fonts && pacman
 # so the only thing that keeps this inside the same budget as the module build
 # is the job count.
 ARG NINJA_JOBS=2
+# Optional, and the tests know the difference: every assertion that needs the
+# real importer is guarded by a QSKIP, so an image without the backend produces
+# a run with skips in it rather than a run that quietly tested less. A run with
+# no skips is the evidence that the real importer was exercised.
 COPY backend-src /backend-src
-RUN meson setup /backend-build /backend-src --prefix=/usr -Dgnome=false -Dgtk3=false \
-    && ninja -C /backend-build -j "$NINJA_JOBS" install \
-    && rm -rf /backend-build \
-    && test -f /usr/lib/NetworkManager/libnm-vpn-plugin-openvpn3.so \
-    && test -f /usr/lib/NetworkManager/VPN/nm-openvpn3-service.name
+RUN set -eu; \
+    if [ -f /backend-src/meson.build ]; then \
+        meson setup /backend-build /backend-src --prefix=/usr -Dgnome=false -Dgtk3=false; \
+        ninja -C /backend-build -j "$NINJA_JOBS" install; \
+        rm -rf /backend-build; \
+        test -f /usr/lib/NetworkManager/libnm-vpn-plugin-openvpn3.so; \
+        test -f /usr/lib/NetworkManager/VPN/nm-openvpn3-service.name; \
+    else \
+        echo 'No backend source given: the importer tests will skip.' >&2; \
+    fi
 
 # Recorded so the backend revision a result was measured against is part of the
 # image rather than part of somebody's notes.
