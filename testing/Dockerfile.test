@@ -1,0 +1,37 @@
+# Test environment: the stock plasma-nm host plus the OpenVPN 3 backend's own
+# libnm plugin, so the importer tests exercise the real importer instead of
+# skipping.
+#
+# SPDX-FileCopyrightText: 2026 Tom Bamford <tom@bamford.io>
+# SPDX-License-Identifier: GPL-2.0-only OR GPL-3.0-only OR LicenseRef-KDE-Accepted-GPL
+#
+# Only the no-GUI parts of the backend are needed: the libnm editor plugin and
+# the service .name file that makes the VPN type discoverable.
+ARG BASE_IMAGE=plasma-nm-openvpn3-build-env
+FROM ${BASE_IMAGE}
+
+# meson/python build the backend; fonts so rendered screenshots show text
+# rather than tofu.
+RUN pacman -Sy --noconfirm --needed meson python ttf-dejavu noto-fonts && pacman -Scc --noconfirm
+
+# Bounded on purpose: an image build is not given a memory limit by BuildKit,
+# so the only thing that keeps this inside the same budget as the module build
+# is the job count.
+ARG NINJA_JOBS=2
+COPY backend-src /backend-src
+RUN meson setup /backend-build /backend-src --prefix=/usr -Dgnome=false -Dgtk3=false \
+    && ninja -C /backend-build -j "$NINJA_JOBS" install \
+    && rm -rf /backend-build \
+    && test -f /usr/lib/NetworkManager/libnm-vpn-plugin-openvpn3.so \
+    && test -f /usr/lib/NetworkManager/VPN/nm-openvpn3-service.name
+
+# Recorded so the backend revision a result was measured against is part of the
+# image rather than part of somebody's notes.
+ARG BACKEND_REVISION=unknown
+RUN printf '%s\n' "$BACKEND_REVISION" > /backend-revision.txt \
+    && rm -rf /backend-src
+
+# D-Bus EXTERNAL authentication needs an NSS identity for the test process, and
+# the tests run as the invoking user so nothing in the image is root-owned.
+ARG TEST_UID=1000
+RUN getent passwd "$TEST_UID" || useradd --uid "$TEST_UID" --no-create-home openvpn3-test

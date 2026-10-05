@@ -77,8 +77,21 @@ Its digests are verified either way.
 ctest --test-dir build --output-on-failure
 ```
 
-At this point that is the pinned-source verification suite. A container
-harness that builds and tests against a stock plasma-nm follows.
+The container harness in [`testing/`](testing/) runs the same build and tests
+against a stock, unpatched distribution plasma-nm in a disposable image, with
+no network, no host bus, no host home directory and no real credentials:
+
+```bash
+export BUILD_ROOT=/path/to/scratch/openvpn3-build        # dedicated, outside the checkout
+export BACKEND_ROOT=/path/to/network-manager-openvpn3    # backend checkout, read only
+testing/run.sh images        # once; the only step that installs packages
+testing/run.sh source
+testing/run.sh build
+testing/run.sh test
+```
+
+See [docs/verification.md](docs/verification.md) for what those containers are
+and are not allowed to do.
 
 ## Backend requirements
 

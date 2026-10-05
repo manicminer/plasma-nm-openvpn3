@@ -63,6 +63,10 @@ if(BUILD_TESTING)
         ENVIRONMENT "CMAKE=${CMAKE_COMMAND};PLASMA_NM_SOURCE_DIR=${_plasma_nm_source}")
     add_test(NAME plasma-nm-version-parsing
              COMMAND ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_SOURCE_DIR}/scripts/test-version-parsing.cmake)
+    # The harness guards the directories it overwrites; a regression there is a
+    # failed assertion rather than a damaged host. See testing/test-paths.sh.
+    add_test(NAME harness-path-guards
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/testing/test-paths.sh)
 endif()
 
 feature_summary(WHAT ALL FATAL_ON_MISSING_REQUIRED_PACKAGES)

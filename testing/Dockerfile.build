@@ -1,0 +1,47 @@
+# Build environment: a stock plasma-nm host.
+#
+# SPDX-FileCopyrightText: 2026 Tom Bamford <tom@bamford.io>
+# SPDX-License-Identifier: GPL-2.0-only OR GPL-3.0-only OR LicenseRef-KDE-Accepted-GPL
+#
+# The point of this image is that plasma-nm comes out of the distribution's own
+# package, unpatched and unbuilt by us: this module has to work against what
+# users actually have installed, so that is what it is compiled and tested
+# against.  Nothing here builds or replaces any part of plasma-nm.
+#
+# Stable Arch "core"/"extra" only -- no kde-unstable, no extra-testing --
+# because that is the desktop stack this ships to.
+FROM archlinux:latest
+
+# PLASMA_NM_VERSION is the version the module is pinned to.  The build refuses
+# to configure against any other, so a rolling repository that has moved on
+# should fail here, loudly and early, rather than during the build.
+ARG PLASMA_NM_VERSION=6.7.5
+
+RUN pacman -Syu --noconfirm --needed \
+        base-devel cmake ninja git pkgconf \
+        qt6-base qt6-tools \
+        extra-cmake-modules \
+        kcoreaddons ki18n kwidgetsaddons kcolorscheme kcompletion \
+        networkmanager-qt modemmanager-qt \
+        qtkeychain-qt6 networkmanager openssl \
+        plasma-nm \
+    && pacman -Scc --noconfirm
+
+# Fail the image build, not the module build, when the distribution's plasma-nm
+# is not the version this module is pinned to.
+RUN set -eu; \
+    installed=$(pacman -Q plasma-nm | awk '{print $2}'); \
+    case "$installed" in \
+        "${PLASMA_NM_VERSION}-"*) ;; \
+        *) echo "This image has plasma-nm $installed, but the module is pinned to ${PLASMA_NM_VERSION}." >&2; \
+           echo "Re-pin the module (docs/repinning.md) or build the image from an archive of that release." >&2; \
+           exit 1 ;; \
+    esac; \
+    test -f /usr/lib/libplasmanm_editor.so; \
+    test -d /usr/lib/qt6/plugins/plasma/network/vpn
+
+# Recorded in the image so a result can say which host it was measured against.
+RUN pacman -Q > /image-packages.txt
+
+ENV QT_QPA_PLATFORM=offscreen
+WORKDIR /src
