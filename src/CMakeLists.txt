@@ -11,6 +11,8 @@ target_sources(plasmanetworkmanagement_openvpn3_core PRIVATE
     openvpn3profile.h
     openvpn3storage.cpp
     openvpn3storage.h
+    openvpn3importer.cpp
+    openvpn3importer.h
     nm-openvpn3-service.h
 )
 set_property(TARGET plasmanetworkmanagement_openvpn3_core PROPERTY POSITION_INDEPENDENT_CODE ON)
@@ -24,6 +26,8 @@ PUBLIC
     KF6::NetworkManagerQt
     Qt::Core
     Qt::DBus
+    PkgConfig::NETWORKMANAGER
 PRIVATE
+    KF6::I18n
     Qt6Keychain::Qt6Keychain
 )
