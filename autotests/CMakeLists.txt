@@ -16,3 +16,15 @@ ecm_add_tests(
     NAME_PREFIX openvpn3-
     LINK_LIBRARIES Qt::Test plasmanetworkmanagement_openvpn3_core
 )
+
+ecm_add_tests(
+    openvpn3directivestest.cpp
+    openvpn3widgettest.cpp
+    NAME_PREFIX openvpn3-
+    GUI
+    LINK_LIBRARIES Qt::Test Qt::Widgets Qt::DBus KF6::CoreAddons plasmanetworkmanagement_openvpn3_core
+)
+
+# Not a test: renders the editor for review. See openvpn3screenshot.cpp.
+add_executable(openvpn3screenshot openvpn3screenshot.cpp)
+target_link_libraries(openvpn3screenshot Qt::Widgets plasmanetworkmanagement_openvpn3_core)

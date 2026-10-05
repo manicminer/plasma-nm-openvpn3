@@ -21,8 +21,8 @@ HARNESS_REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 command=${1:-test}
 shift || true
 case "$command" in
-    images|source|build|test) ;;
-    *) echo 'Usage: run.sh images|source|build|test [arguments]' >&2; exit 2 ;;
+    images|source|build|test|screenshots) ;;
+    *) echo 'Usage: run.sh images|source|build|test|screenshots [arguments]' >&2; exit 2 ;;
 esac
 
 : "${BUILD_ROOT:?Set BUILD_ROOT to a dedicated scratch directory outside the checkout}"
@@ -115,5 +115,15 @@ case "$command" in
         mkdir -p "$build_root/home"
         contained -e QT_QPA_PLATFORM=offscreen -w /work/build "$image_test" \
             ctest --output-on-failure "$@"
+        ;;
+    screenshots)
+        # Not a test: renders the editor's pages to PNGs for review.
+        if [[ ! -x "$build_dir/bin/openvpn3screenshot" ]]; then
+            echo "No $build_dir/bin/openvpn3screenshot; run 'run.sh build' first" >&2
+            exit 2
+        fi
+        mkdir -p "$build_root/screenshots" "$build_root/home"
+        contained -e QT_QPA_PLATFORM=offscreen -w /work/build "$image_test" \
+            /work/build/bin/openvpn3screenshot /work/screenshots
         ;;
 esac

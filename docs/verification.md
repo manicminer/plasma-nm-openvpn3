@@ -29,6 +29,7 @@ testing/run.sh source        # fetch and verify the pinned plasma-nm headers
 testing/run.sh build
 testing/run.sh test
 testing/run.sh test -R openvpn3 -V
+testing/run.sh screenshots   # not a test: renders the editor's pages for review
 ```
 
 `BUILD_ROOT` is a dedicated scratch directory the harness owns: it creates it,

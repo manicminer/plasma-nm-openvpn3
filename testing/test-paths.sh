@@ -59,6 +59,11 @@ mkdir -p "$good_root" "$backend"
 # which is a different guard; give the accepted cases something to find.
 mkdir -p "$good_root/plasma-nm-source"
 : >"$good_root/plasma-nm-source/CMakeLists.txt"
+# The screenshots command likewise refuses to run before there is anything to
+# render, which is a different guard again.
+mkdir -p "$good_root/build/bin"
+touch "$good_root/build/bin/openvpn3screenshot"
+chmod +x "$good_root/build/bin/openvpn3screenshot"
 # A symlink alias for the checkout: a string-only guard does not see through it.
 ln -s "$repo" "$work/repo-link"
 
@@ -146,11 +151,14 @@ run_case accept 'the same directory reached through dot-dot' BUILD_ROOT="$good_r
 run_case accept 'image name overrides' BUILD_ROOT="$good_root" IMAGE_BUILD=a-env IMAGE_TEST=a-test-env -- build
 run_case accept 'the test command' BUILD_ROOT="$good_root" -- test -R openvpn3
 run_case accept 'the source command' BUILD_ROOT="$good_root" -- source
+run_case accept 'the screenshots command' BUILD_ROOT="$good_root" -- screenshots
 
 echo
-echo "# building without the pinned source is refused rather than half-run"
+echo "# a command with nothing to run yet is refused rather than half-run"
 run_case reject 'build before the pinned plasma-nm source was fetched' \
     BUILD_ROOT="$work/scratch/no-source-yet" -- build
+run_case reject 'screenshots before anything was built' \
+    BUILD_ROOT="$work/scratch/not-built-yet" -- screenshots
 
 echo
 echo "# companion inputs are validated too"

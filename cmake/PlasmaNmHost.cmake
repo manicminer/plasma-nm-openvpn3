@@ -222,4 +222,11 @@ set(PLASMA_NM_HOST_VERSION_ORIGIN "${_plasma_nm_host_origin}")
 add_library(PlasmaNm::Editor UNKNOWN IMPORTED)
 set_target_properties(PlasmaNm::Editor PROPERTIES
     IMPORTED_LOCATION "${PLASMA_NM_EDITOR_LIBRARY}"
-    INTERFACE_INCLUDE_DIRECTORIES "${_plasma_nm_include}")
+    INTERFACE_INCLUDE_DIRECTORIES "${_plasma_nm_include}"
+    # What the four headers themselves need in order to be compiled: plasma-nm
+    # links these PUBLIC for the same reason -- SettingWidget includes
+    # KAcceleratorManager, VpnUiPlugin includes KPluginFactory and
+    # NetworkManagerQt, and both derive from QWidget or QObject. The library's
+    # own remaining dependencies are recorded in the shared object and need no
+    # repeating here.
+    INTERFACE_LINK_LIBRARIES "KF6::CoreAddons;KF6::NetworkManagerQt;KF6::WidgetsAddons;Qt::Widgets")
