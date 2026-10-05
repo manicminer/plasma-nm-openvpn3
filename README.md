@@ -16,7 +16,8 @@ NetworkManager OpenVPN 3 backend at runtime — see
 [Backend requirements](#backend-requirements) — and does not modify, replace or
 ship any part of plasma-nm.
 
-> **Status:** initial release in progress.
+> **Status:** initial release in progress. See
+> [docs/limitations.md](docs/limitations.md) for what this does not do.
 
 ## Why it needs plasma-nm's source to build
 

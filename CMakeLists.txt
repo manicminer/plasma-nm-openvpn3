@@ -55,6 +55,8 @@ string(APPEND CMAKE_MODULE_LINKER_FLAGS " -Wl,--no-undefined")
 
 include(PlasmaNmHost)
 
+add_subdirectory(src)
+
 if(BUILD_TESTING)
     enable_testing()
     add_test(NAME plasma-nm-source-verification
@@ -67,6 +69,7 @@ if(BUILD_TESTING)
     # failed assertion rather than a damaged host. See testing/test-paths.sh.
     add_test(NAME harness-path-guards
              COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/testing/test-paths.sh)
+    add_subdirectory(autotests)
 endif()
 
 feature_summary(WHAT ALL FATAL_ON_MISSING_REQUIRED_PACKAGES)
