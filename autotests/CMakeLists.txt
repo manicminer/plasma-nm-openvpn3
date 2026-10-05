@@ -56,3 +56,19 @@ add_dependencies(openvpn3availabilitytest plasmanetworkmanagement_openvpn3ui)
 set_tests_properties(openvpn3-openvpn3availabilitytest PROPERTIES
     ENVIRONMENT_MODIFICATION QT_PLUGIN_PATH=path_list_prepend:${CMAKE_BINARY_DIR}/bin
 )
+
+# Not a test of this module: a test of the host it is installed into. It
+# subclasses the installed plasma-nm's own connection editor, so what it
+# reports is what that plasma-nm does rather than what its source appears to
+# say. Each assertion pins a limitation documented in docs/limitations.md.
+ecm_add_test(
+    openvpn3hostcompattest.cpp
+    TEST_NAME openvpn3hostcompattest
+    NAME_PREFIX openvpn3-
+    GUI
+    LINK_LIBRARIES Qt::Test Qt::Widgets KF6::CoreAddons plasmanetworkmanagement_openvpn3_core
+)
+add_dependencies(openvpn3hostcompattest plasmanetworkmanagement_openvpn3ui)
+set_tests_properties(openvpn3-openvpn3hostcompattest PROPERTIES
+    ENVIRONMENT_MODIFICATION QT_PLUGIN_PATH=path_list_prepend:${CMAKE_BINARY_DIR}/bin
+)

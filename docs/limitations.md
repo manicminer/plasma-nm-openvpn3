@@ -52,6 +52,70 @@ be the problem.
 `host-patches/0001-offer-an-ipv6-page-and-request-secrets-for-openvpn3.patch`
 makes the host ask for such a profile anyway.
 
+### An OpenVPN 3 connection gets no IPv6 page
+
+Stock plasma-nm decides which connections get an IPv6 page inside its own
+connection editor, by connection type and — for a VPN — by service name, and
+the only VPN service on that list is OpenVPN 2's. An OpenVPN 3 connection
+therefore gets IPv4 and no IPv6, so its IPv6 settings are neither shown nor
+editable here and the editor writes back whatever the connection type
+defaults to. Configure them with `nmcli` or another editor if you need
+something other than the default.
+
+No plugin can add itself to that list. A setting widget's map is inserted
+under its own type, so this module's page can only ever contribute the `vpn`
+setting; the page list, the widget list and the decision are all private to
+`ConnectionEditorBase`. Reaching into the host's widgets by name to bolt a
+page on was considered and rejected: it would depend on the internal layout of
+a library with no stable ABI and break in a way nobody could diagnose.
+
+`host-patches/0001-offer-an-ipv6-page-and-request-secrets-for-openvpn3.patch`
+adds the service to that list.
+
+### The editor drops connection properties it does not show
+
+Saving a connection through plasma-nm's connection editor loses the
+`connection.*` properties that nothing in the editor shows. Its General page
+builds a fresh connection setting out of its own controls, so a property that
+is on no page, and that the editor does not go out of its way to put back
+afterwards, is not in what gets saved. On an OpenVPN 3 connection that
+includes `interface-name`, `mdns`, `llmnr`, `autoconnect-retries`,
+`gateway-ping-timeout`, `lldp`, `stable-id`, `auth-retries`, `mud-url` and
+`wait-device-timeout`; the test below pins four of them.
+
+Some unshown properties are put back by hand and do survive: the `uuid`, the
+`master` and `slave-type` that make a connection a member of a bond or bridge,
+and `interface-name` for a WireGuard connection, which comes from WireGuard's
+own page.
+
+What the General page itself shows and keeps is the host's business and is not
+documented here; this is only about what it does not show.
+
+**This is not caused by this module and is not specific to OpenVPN 3.** It
+happens on a stock plasma-nm with or without this installed, to every
+connection type that has no page of its own setting the property in question.
+It is listed here because an OpenVPN 3 connection is subject to it like any
+other, and because it cannot be fixed from a plugin for the same reason the
+IPv6 page cannot.
+
+`host-patches/0002-preserve-connection-properties-the-editor-does-not-show.patch`
+fixes it in the host, for every connection type.
+
+### These are tested, not asserted
+
+`autotests/openvpn3hostcompattest.cpp` subclasses the installed plasma-nm's
+own connection editor and measures what it actually does with an OpenVPN 3
+connection: which pages it offers, and which properties survive a save. A
+plasma-nm that fixes one of these makes an assertion there fail, so this page
+gets corrected rather than quietly going stale.
+
+Its third assertion is weaker and says so: that what this module writes
+satisfies the condition under which the host asks NetworkManager for a
+connection's secrets. That condition is reimplemented in this project and
+pinned to plasma-nm 6.7.5, because a real `GetSecrets` round trip needs a
+NetworkManager to make it to and these are component tests with no bus. It
+asserts the contract, not the conversation.
+
 ## Profile parsing
 
 ### A backslash inside single quotes follows OpenVPN 2, not openvpn3
