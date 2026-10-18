@@ -8,7 +8,7 @@
 #
 # The revision is content-addressed: a git commit hash covers the tree it
 # names, so fetching this commit from any mirror yields these exact headers or
-# fails.  plasma-nm-6.7.5.sha256 digests the four files that are actually used,
+# fails.  plasma-nm-6.8.0.sha256 digests the four files that are actually used,
 # which is checked again whatever the source tree came from -- a fetched clone
 # and a local checkout are verified alike.
 #
@@ -16,14 +16,14 @@
 #                 plasma-nm version the build accepts without an override
 # repository      canonical upstream (github.com/KDE/plasma-nm is a mirror of
 #                 the same history and serves the same commit)
-# commit          immutable revision; equals the peeled v6.7.5 tag
+# commit          immutable revision; equals the peeled v6.8.0 tag
 # tag             the release tag that peels to that commit
 # license         license of the headers this pin covers; they are read at
 #                 build time and never redistributed by this project
 
-version = 6.7.5
+version = 6.8.0
 repository = https://invent.kde.org/plasma/plasma-nm.git
 mirror = https://github.com/KDE/plasma-nm.git
-commit = af9d0f5386a0a2c340e1392689795b2fdbd60035
-tag = v6.7.5
+commit = da0cad7a559670996af2b4d263d974a3380a7d36
+tag = v6.8.0
 license = LGPL-2.1-only OR LGPL-3.0-only OR LicenseRef-KDE-Accepted-LGPL
