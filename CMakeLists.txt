@@ -5,10 +5,10 @@ cmake_minimum_required(VERSION 3.16)
 
 project(plasma-nm-openvpn3 VERSION 0.1.0)
 
-# The same minimums plasma-nm 6.7.5 itself requires: this module is loaded into
+# The same minimums plasma-nm 6.8.0 itself requires: this module is loaded into
 # that build's process, so there is nothing to gain from asking for less.
-set(QT_MIN_VERSION "6.10.0")
-set(KF6_MIN_VERSION "6.26.0")
+set(QT_MIN_VERSION "6.11.0")
+set(KF6_MIN_VERSION "6.30.0")
 set(KDE_COMPILERSETTINGS_LEVEL "5.82")
 
 set(CMAKE_CXX_STANDARD 20)

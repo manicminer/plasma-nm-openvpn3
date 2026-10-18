@@ -199,8 +199,8 @@ fi
 real_source=${PLASMA_NM_SOURCE_DIR:-$repo_root/plasma-nm-source}
 if [[ -f $real_source/CMakeLists.txt ]]; then
     assert_accepts 'the committed pin verifies the fetched plasma-nm source' \
-        "$repo_root/provenance/plasma-nm-6.7.5.pin" \
-        "$repo_root/provenance/plasma-nm-6.7.5.sha256" \
+        "$repo_root/provenance/plasma-nm-6.8.0.pin" \
+        "$repo_root/provenance/plasma-nm-6.8.0.sha256" \
         "$real_source"
 else
     printf 'SKIP the committed pin verifies the fetched plasma-nm source (no tree at %s)\n' "$real_source"
