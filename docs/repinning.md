@@ -93,6 +93,31 @@ a local checkout is verified as strictly as a fresh clone.
 7. Rebuild, run the full suite against a host of the new version, and record
    the result in the compatibility matrix in the README.
 
+## A runtime range in a distribution package is not a wider pin
+
+The pin governs the build: one exact version, verified, fail-closed, and that
+default does not change. What a downstream package then declares as its runtime
+dependency on plasma-nm is that package's own policy, and it may be wider.
+The [lab/arch-packages build](https://code.manicminer.io/lab/arch-packages),
+for instance, deliberately accepts any stable
+`plasma-nm >= 6.8, < 6.9`, so that a plasma-nm patch update does not wait on a
+rebuild of this module. To build against a 6.8.x host other than the pinned
+one it passes `-DPLASMA_NM_ALLOW_ABI_MISMATCH=ON`, behind its own guard that
+admits only a plain 6.8.x owned by the `plasma-nm` package, and keeps the
+header digests and test suites mandatory. That knowingly departs from the
+"must not be packaged" below. It is that package's decision, not something
+this project vouches for.
+
+The range rests on an assumption this project does not verify and does not
+promise for future releases: that plasma-nm leaves the four private headers
+alone within a patch series. It held from 6.8.0 to 6.8.1, where the four
+headers and the whole `libs/` tree are byte-identical, and nothing more is
+known. Nothing can check it when the module is loaded, because the editor
+library has no `SOVERSION` or ABI tag to compare against. So for each new
+patch release inside such a range, run the header diff in step 6 against it;
+an empty diff keeps the assumption true for that release, and anything else
+means re-pinning, rebuilding and narrowing the range.
+
 ## Building against an unverified host anyway
 
 `-DPLASMA_NM_ALLOW_ABI_MISMATCH=ON` turns the refusal into a warning. It
