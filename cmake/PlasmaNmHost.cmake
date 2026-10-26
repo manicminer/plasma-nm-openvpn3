@@ -24,9 +24,9 @@ include(GenerateExportHeader)
 include(${CMAKE_CURRENT_LIST_DIR}/PlasmaNmSource.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/PlasmaNmVersion.cmake)
 
-set(PLASMA_NM_PIN_FILE "${PROJECT_SOURCE_DIR}/provenance/plasma-nm-6.8.0.pin"
+set(PLASMA_NM_PIN_FILE "${PROJECT_SOURCE_DIR}/provenance/plasma-nm-6.8.1.pin"
     CACHE FILEPATH "Pin file naming the plasma-nm revision the private headers come from")
-set(PLASMA_NM_DIGEST_FILE "${PROJECT_SOURCE_DIR}/provenance/plasma-nm-6.8.0.sha256"
+set(PLASMA_NM_DIGEST_FILE "${PROJECT_SOURCE_DIR}/provenance/plasma-nm-6.8.1.sha256"
     CACHE FILEPATH "SHA-256 digests of the pinned plasma-nm headers")
 set(PLASMA_NM_SOURCE_DIR "" CACHE PATH
     "plasma-nm source tree matching the pin; scripts/fetch-plasma-nm-source.sh writes one")

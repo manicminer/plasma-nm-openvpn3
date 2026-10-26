@@ -112,7 +112,7 @@ gets corrected rather than quietly going stale.
 Its third assertion is weaker and says so: that what this module writes
 satisfies the condition under which the host asks NetworkManager for a
 connection's secrets. That condition is reimplemented in this project and
-pinned to plasma-nm 6.8.0, because a real `GetSecrets` round trip needs a
+pinned to plasma-nm 6.8.1, because a real `GetSecrets` round trip needs a
 NetworkManager to make it to and these are component tests with no bus. It
 asserts the contract, not the conversation.
 

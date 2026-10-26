@@ -18,8 +18,8 @@
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-pin_file=${PLASMA_NM_PIN_FILE:-$repo_root/provenance/plasma-nm-6.8.0.pin}
-digest_file=${PLASMA_NM_DIGEST_FILE:-$repo_root/provenance/plasma-nm-6.8.0.sha256}
+pin_file=${PLASMA_NM_PIN_FILE:-$repo_root/provenance/plasma-nm-6.8.1.pin}
+digest_file=${PLASMA_NM_DIGEST_FILE:-$repo_root/provenance/plasma-nm-6.8.1.sha256}
 cmake=${CMAKE:-cmake}
 git_bin=${GIT:-git}
 # Left in a fetched tree to mark it as this script's to replace.

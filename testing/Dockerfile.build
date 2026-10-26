@@ -15,7 +15,7 @@ FROM archlinux:latest
 # PLASMA_NM_VERSION is the version the module is pinned to.  The build refuses
 # to configure against any other, so a rolling repository that has moved on
 # should fail here, loudly and early, rather than during the build.
-ARG PLASMA_NM_VERSION=6.8.0
+ARG PLASMA_NM_VERSION=6.8.1
 
 # qt6-webengine and openconnect are plasma-nm's optional dependencies, and the
 # distribution's package ships VPN plugins that need them. They are installed
