@@ -7,6 +7,7 @@
 #include <QTemporaryDir>
 #include <QTest>
 
+#include "openvpn3backendguard.h"
 #include "openvpn3importer.h"
 #include "openvpn3storage.h"
 #include "openvpn3widget.h"
@@ -14,21 +15,6 @@
 #include "vpnuiplugin.h"
 #include <libnm/NetworkManager.h>
 #include <memory>
-
-namespace
-{
-QString dataPath(const QString &name)
-{
-    return QString::fromLatin1(OPENVPN3_TEST_DATA_DIR) + QLatin1Char('/') + name;
-}
-
-/** True when the openvpn3 backend's libnm plugin is available to libnm. */
-bool backendAvailable()
-{
-    static const bool available = Openvpn3Importer::fromFile(dataPath(QStringLiteral("office.ovpn"))).isValid();
-    return available;
-}
-}
 
 class Openvpn3AvailabilityTest : public QObject
 {
@@ -47,8 +33,8 @@ private Q_SLOTS:
         QFETCH(int, mode);
         // Where a provider is advertised the child goes on to import through
         // the backend's own libnm plugin, so those rows need it installed.
-        if (mode >= 2 && !backendAvailable()) {
-            QSKIP("the openvpn3 backend's libnm plugin is not installed");
+        if (mode >= 2) {
+            OPENVPN3_REQUIRE_BACKEND();
         }
         QTemporaryDir dir;
         QVERIFY(dir.isValid());
@@ -118,7 +104,11 @@ int main(int argc, char **argv)
         }
         if (result) {
             NMSettingVpn *vpn = nm_connection_get_setting_vpn(result.connection());
+            // The backend's own layout: the flags say the profile is a
+            // secret, with no marker of the older proposal next to them.
             const bool safe = !nm_setting_vpn_get_data_item(vpn, "profile")
+                && !nm_setting_vpn_get_data_item(vpn, "profile-storage")
+                && QByteArray(nm_setting_vpn_get_data_item(vpn, "remote")) == "vpn1.example.org"
                 && QByteArray(nm_setting_vpn_get_data_item(vpn, "profile-flags")) == "1"
                 && QByteArray(nm_setting_vpn_get_data_item(vpn, "password-flags")) == "1"
                 && nm_setting_vpn_get_secret(vpn, "profile") && nm_setting_vpn_get_secret(vpn, "password");

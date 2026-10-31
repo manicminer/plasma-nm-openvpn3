@@ -10,7 +10,9 @@
 #include "openvpn3profile.h"
 #include "openvpn3storage.h"
 
+#include <QDir>
 #include <QFile>
+#include <QStringDecoder>
 #include <QTemporaryDir>
 
 #include <KLocalizedString>
@@ -63,8 +65,43 @@ NMVpnEditorPlugin *editorPlugin(QString *errorMessage)
     return plugin;
 }
 
+/**
+ * Why the backend's importer must not be given @p fileName, or nothing.
+ *
+ * It matches block tags by the literal stripped line where openvpn3 lexes
+ * it, so for a quoted or commented opening tag, or an indented closing one,
+ * it would read what openvpn3 keeps as a scope or a payload as directives --
+ * inline the files and lift the credentials in it. That is refused rather
+ * than imported with the scope silently taken apart.
+ */
+QString importerDisagreement(const QString &fileName)
+{
+    QFile file(fileName);
+    if (!file.open(QIODevice::ReadOnly)) {
+        return QString(); // the importer reports that itself
+    }
+    auto toUtf16 = QStringDecoder(QStringDecoder::Utf8, QStringDecoder::Flag::Stateless);
+    const QString text = toUtf16(file.readAll());
+    if (toUtf16.hasError()) {
+        return QString(); // so does it this
+    }
+    const QString block = Openvpn3Profile::fromText(text).importerTagDisagreement();
+    if (block.isEmpty()) {
+        return QString();
+    }
+    return i18n("The <interface>%1</interface> block in this profile is written in a way the OpenVPN 3 backend's importer reads differently "
+                "from openvpn3 -- a quoted tag, a comment after the opening tag, or an indented closing tag -- so importing it could take "
+                "files or credentials out of it. Write each tag on a line of its own, then import again.",
+                block);
+}
+
 NMConnection *loadConnection(const QString &fileName, QString *errorMessage)
 {
+    const QString disagreement = importerDisagreement(fileName);
+    if (!disagreement.isEmpty()) {
+        *errorMessage = disagreement;
+        return nullptr;
+    }
     NMVpnEditorPlugin *plugin = editorPlugin(errorMessage);
     if (!plugin) {
         return nullptr;
@@ -114,16 +151,50 @@ void migrateToSecretStorage(NMConnection *connection, NetworkManager::Setting::S
             nm_setting_set_secret_flags(NM_SETTING(s_vpn), key, nmFlags, nullptr);
         }
     }
-    // The value belongs to the setting's table, which the removal frees.
-    gchar *stored = g_strdup(nm_setting_vpn_get_data_item(s_vpn, NM_OPENVPN3_KEY_PROFILE));
-    if (!stored) {
+    // The backend (0.2.0 and later) imports the profile as a system-owned
+    // secret already; an older one put it in a public data item. Either way
+    // it ends up the secret, with the flags asked for and nothing else
+    // marking it: the flags are the marker.
+    if (const char *legacy = nm_setting_vpn_get_data_item(s_vpn, NM_OPENVPN3_KEY_PROFILE)) {
+        // The value belongs to the setting's table, which the removal frees.
+        gchar *stored = g_strdup(legacy);
+        nm_setting_vpn_remove_data_item(s_vpn, NM_OPENVPN3_KEY_PROFILE);
+        if (!nm_setting_vpn_get_secret(s_vpn, NM_OPENVPN3_KEY_PROFILE)) {
+            nm_setting_vpn_add_secret(s_vpn, NM_OPENVPN3_KEY_PROFILE, stored);
+        }
+        g_free(stored);
+    }
+    nm_setting_vpn_remove_data_item(s_vpn, NM_OPENVPN3_KEY_PROFILE_STORAGE);
+    if (!nm_setting_vpn_get_secret(s_vpn, NM_OPENVPN3_KEY_PROFILE)) {
         return;
     }
-    nm_setting_vpn_remove_data_item(s_vpn, NM_OPENVPN3_KEY_PROFILE);
-    nm_setting_vpn_add_data_item(s_vpn, NM_OPENVPN3_KEY_PROFILE_STORAGE, NM_OPENVPN3_PROFILE_STORAGE_SECRET);
-    nm_setting_set_secret_flags(NM_SETTING(s_vpn), NM_OPENVPN3_KEY_PROFILE, static_cast<NMSettingSecretFlags>(static_cast<int>(flags)), nullptr);
-    nm_setting_vpn_add_secret(s_vpn, NM_OPENVPN3_KEY_PROFILE, stored);
-    g_free(stored);
+    nm_setting_set_secret_flags(NM_SETTING(s_vpn), NM_OPENVPN3_KEY_PROFILE, nmFlags, nullptr);
+    if (!nm_setting_vpn_get_data_item(s_vpn, NM_OPENVPN3_KEY_REMOTE)) {
+        const NMStringMap data{{QLatin1String(NM_OPENVPN3_KEY_PROFILE_FLAGS), QString::number(static_cast<int>(flags))}};
+        const NMStringMap secrets{{QLatin1String(NM_OPENVPN3_KEY_PROFILE), QString::fromUtf8(nm_setting_vpn_get_secret(s_vpn, NM_OPENVPN3_KEY_PROFILE))}};
+        const QString remote = Openvpn3Storage::displayRemote(Openvpn3Storage::readProfile(data, secrets));
+        if (!remote.isEmpty()) {
+            nm_setting_vpn_add_data_item(s_vpn, NM_OPENVPN3_KEY_REMOTE, remote.toUtf8().constData());
+        }
+    }
+}
+
+/** Every data item and secret of @p s_vpn, as the maps the rest of this
+ * module reads a connection from. */
+void vpnMaps(NMSettingVpn *s_vpn, NMStringMap &data, NMStringMap &secrets)
+{
+    nm_setting_vpn_foreach_data_item(
+        s_vpn,
+        [](const char *key, const char *value, gpointer user) {
+            static_cast<NMStringMap *>(user)->insert(QString::fromUtf8(key), QString::fromUtf8(value));
+        },
+        &data);
+    nm_setting_vpn_foreach_secret(
+        s_vpn,
+        [](const char *key, const char *value, gpointer user) {
+            static_cast<NMStringMap *>(user)->insert(QString::fromUtf8(key), QString::fromUtf8(value));
+        },
+        &secrets);
 }
 
 }
@@ -135,11 +206,14 @@ Openvpn3Import Openvpn3ImporterPrivate::fromConnection(NMConnection *connection)
         return failure(i18n("The imported connection has no VPN settings"));
     }
 
-    // The backend's importer always produces the legacy public profile, so
-    // that clients which do not know about secret storage keep working; it
-    // is Plasma that moves it before the connection reaches NetworkManager.
-    const NMStringMap data{{QLatin1String(NM_OPENVPN3_KEY_PROFILE), dataItem(s_vpn, NM_OPENVPN3_KEY_PROFILE)}};
-    const QString profile = Openvpn3Storage::readProfile(data, {});
+    // Wherever the backend put it: a system-owned secret from 0.2.0 on, a
+    // public data item before. The storage rules that read a saved
+    // connection read this one too, so a stale data copy next to a secret is
+    // ignored here exactly as it is there.
+    NMStringMap data;
+    NMStringMap secrets;
+    vpnMaps(s_vpn, data, secrets);
+    const QString profile = Openvpn3Storage::readProfile(data, secrets);
     if (profile.isEmpty()) {
         return failure(i18n("The imported connection has no OpenVPN profile"));
     }
@@ -150,6 +224,8 @@ Openvpn3Import Openvpn3ImporterPrivate::fromConnection(NMConnection *connection)
     result.m_username = dataItem(s_vpn, NM_OPENVPN3_KEY_USERNAME);
     const char *password = nm_setting_vpn_get_secret(s_vpn, NM_OPENVPN3_KEY_PASSWORD);
     result.m_password = password ? QString::fromUtf8(password) : QString();
+    // As the backend's service reads it, a <connection> block included: it
+    // asks for credentials for an auth-user-pass anywhere outside a payload.
     result.m_needsUserPass = Openvpn3Profile::fromText(profile).containsOption(QStringLiteral("auth-user-pass"));
     // The backend flags the passphrase it decided is needed.
     result.m_needsCertPass = !dataItem(s_vpn, NM_OPENVPN3_KEY_CERT_PASS "-flags").isEmpty();
@@ -168,6 +244,108 @@ Openvpn3Import Openvpn3Import::fromProfileText(const QString &profile, const QSt
     result.m_needsUserPass = Openvpn3Profile::fromText(profile).containsOption(QStringLiteral("auth-user-pass"));
     result.m_needsCertPass = needsCertPass;
     return result;
+}
+
+bool Openvpn3Importer::backendIsInstalled(QString *errorMessage)
+{
+    QString message;
+    NMVpnEditorPlugin *plugin = editorPlugin(&message);
+    if (errorMessage) {
+        *errorMessage = message;
+    }
+    if (!plugin) {
+        return false;
+    }
+    g_object_unref(plugin);
+    return true;
+}
+
+Openvpn3Import Openvpn3Importer::resolveReferences(const Openvpn3Profile &profile, const QSet<QString> &leave)
+{
+    QList<quint64> pending;
+    bool bareAuthUserPass = false;
+    for (int i = 0; i < profile.count(); ++i) {
+        const Openvpn3Entry &entry = profile.at(i);
+        if (profile.needsNormalizationAt(i) && !leave.contains(profile.sourceAt(i))) {
+            pending.append(entry.id());
+        } else if (entry.isDirective() && entry.name == QLatin1String("auth-user-pass")) {
+            bareAuthUserPass = true;
+        }
+    }
+
+    Openvpn3Profile resolved = profile;
+    const QString newline = profile.usesCrlf() ? QStringLiteral("\r\n") : QStringLiteral("\n");
+    QString username;
+    QString password;
+    bool needsCertPass = false;
+
+    for (const quint64 id : std::as_const(pending)) {
+        const int index = resolved.indexOfId(id);
+        const Openvpn3Entry entry = resolved.at(index);
+
+        // The entry on its own, with just enough around it for the backend to
+        // accept it as a client profile; what it makes of the entry is what
+        // goes back in the entry's place, and the scaffolding is dropped.
+        QString snippet = QStringLiteral("client\nremote resolve.invalid\n");
+        if (entry.isBlock()) {
+            QString body = entry.body;
+            if (!body.isEmpty() && !body.endsWith(u'\n')) {
+                body += u'\n';
+            }
+            snippet += u'<' + entry.name + QLatin1String(">\n") + body + QLatin1String("</") + entry.name + QLatin1String(">\n");
+        } else {
+            const QString path = entry.value();
+            if (!QDir::isAbsolutePath(path)) {
+                // The backend would read it relative to the temporary
+                // directory the snippet goes through and report a path
+                // nobody wrote.
+                return Openvpn3ImporterPrivate::failure(
+                    i18n("<interface>%1</interface> names %2, a relative path. A profile written or edited here has no folder that path could be "
+                         "relative to: give the full path, or use Import Profile… on the file the profile came from.",
+                         entry.name,
+                         path));
+            }
+            QString line = entry.name;
+            for (const QString &argument : entry.arguments) {
+                line += u' ' + Openvpn3Profile::quoteArgument(argument);
+            }
+            snippet += line + u'\n';
+        }
+
+        const Openvpn3Import piece = normalize(snippet);
+        if (!piece.isValid()) {
+            return Openvpn3ImporterPrivate::failure(i18n("<interface>%1</interface>: %2", entry.name, piece.errorMessage()));
+        }
+        QString text = piece.profile();
+        if (newline != QLatin1String("\n")) {
+            // A referenced file may have CRLF lines of its own, which the
+            // backend copies as they are.
+            text.replace(QLatin1String("\r\n"), QLatin1String("\n"));
+            text.replace(u'\n', newline);
+        }
+        QList<Openvpn3Entry> replacement = Openvpn3Profile::fromText(text).entries().mid(2);
+
+        if (entry.name == QLatin1String("auth-user-pass")) {
+            // As the backend's take_credentials() does across sources: a later
+            // one replaces only what it actually has.
+            if (!piece.username().isEmpty()) {
+                username = piece.username();
+            }
+            if (!piece.password().isEmpty()) {
+                password = piece.password();
+            }
+            // What the backend writes once, however many sources the
+            // credentials had: a second bare directive is not added.
+            if (bareAuthUserPass) {
+                replacement.clear();
+            }
+            bareAuthUserPass = true;
+        }
+        needsCertPass = needsCertPass || piece.needsCertPass();
+        resolved.replaceWith(index, replacement);
+    }
+
+    return Openvpn3Import::fromProfileText(resolved.toText(), username, password, needsCertPass || resolved.mayNeedPrivateKeyPassphrase());
 }
 
 Openvpn3Import Openvpn3Importer::fromFile(const QString &fileName)

@@ -16,13 +16,15 @@
  *
  * Entries keep the source they were parsed from. An entry that nothing has
  * changed is written back exactly as it came in, which is what makes a round
- * trip lossless but for the formatting: unknown directives, odd quoting,
- * duplicate remotes and @c <connection> blocks all survive it even though the
- * editor has no idea what they mean.
+ * trip lossless: unknown directives, odd quoting, duplicate remotes and
+ * @c <connection> blocks all survive it even though the editor has no idea
+ * what they mean.
  *
- * There is no comment entry and no blank entry. Neither is something openvpn3
- * reads or this editor can do anything with, so Openvpn3Profile::fromText()
- * drops both rather than keep a row nothing can act on; see that function.
+ * There is no comment entry and no blank entry: neither is something openvpn3
+ * reads, and a table row for one would be a row nothing can act on. They are
+ * kept all the same, carried by the entry they precede -- and a comment at the
+ * end of a directive's line by that directive -- so that the document comes
+ * back out of Openvpn3Profile::toText() with every one of them in place.
  */
 class Openvpn3Entry
 {
@@ -74,9 +76,21 @@ private:
     //! Hands out one id, and never the same one twice.
     static quint64 nextId();
 
-    //! The source this entry was parsed from, minus any comment on it,
-    //! terminator included. Never blank: a blank line is no entry.
+    //! The comment and blank lines in front of this entry, verbatim, each
+    //! with its terminator. Formatting, which travels with the entry.
+    QString m_leading;
+    //! The source this entry was parsed from, verbatim: the comment at the
+    //! end of its line and its terminator included. Never blank.
     QString m_source;
+    //! The comment at the end of the entry's (opening) line, with the
+    //! whitespace in front of it and without the terminator; kept when the
+    //! entry itself is rewritten.
+    QString m_comment;
+    //! The terminator of the entry's last line: "\n", "\r\n", or empty for
+    //! a final line with none. Only meaningful when m_parsed.
+    QString m_terminator;
+    //! True for an entry read from text, false for one made here.
+    bool m_parsed = false;
     //! False once something changed it; then it is rendered instead.
     bool m_verbatim = false;
     quint64 m_id = nextId();
@@ -91,49 +105,51 @@ private:
  * list of directives the editor knows about -- an entry it does not understand
  * is simply an entry it does not touch.
  *
- * The formatting -- comments and blank lines -- is the one thing this does not
- * keep, and the one thing reading a profile changes about it; see fromText().
+ * One lossless document: toText() of what fromText() read is the text it was
+ * given, byte for byte -- comments, blank lines, CRLF and a missing final
+ * newline included. The formatting is not among the entries, so the table
+ * built from them shows none of it; it rides along with the entries instead,
+ * and the editing methods below say what happens to it.
  */
 class Openvpn3Profile
 {
 public:
     /**
-     * Parses @p text, dropping the formatting: the comments and the blank
-     * lines.
+     * Parses @p text, losing nothing.
      *
-     * Everything else is kept: directive order, repeated directives, quoting,
-     * the whitespace a directive line is padded with, and whatever @c <tag>
-     * blocks the profile has. A line that is nothing but a comment, or nothing
-     * but whitespace, becomes no entry at all, and a comment after a directive
-     * is cut off the entry's source, so none of it can come back out of
-     * toText(). A profile that was only ever formatting parses to an empty
-     * document.
+     * Directive order, repeated directives, quoting, the whitespace a line is
+     * padded with, whatever @c <tag> blocks the profile has, and the
+     * formatting -- comment lines, blank lines and a comment at the end of a
+     * directive -- all come back out of toText(). A line that is nothing but
+     * a comment, or nothing but whitespace, becomes no entry: it is carried by
+     * the entry after it, or after the last entry when nothing follows.
      *
      * A @c # or @c ; starts a comment when it is unquoted, unescaped and at
      * the start of a word -- what OpenVPN 2's @c parse_line() and openvpn3's
      * @c OptionList::LexComment agree on. One inside quotes, escaped with a
      * backslash or glued to the middle of a word is part of a value and stays.
      *
-     * A line is blank when it holds nothing but the whitespace the backend's
-     * importer strips a line with; see @c isBlankLine() in the implementation.
-     * A line of @c U+00A0 is a value rather than formatting, and so is one of
-     * @c \\v, which @c g_ascii_isspace() does not count as whitespace.
+     * A line is blank when it holds nothing but ASCII whitespace other than
+     * @c \v, which is what the backend's importer strips a line down to; see
+     * @c isBlankLine() in the implementation. A line of @c U+00A0 or of
+     * @c \v is a value rather than formatting.
      *
-     * The lines of an opaque payload (@c <ca>, @c <key>, an inline
-     * @c <auth-user-pass>, an unknown @c <tag>) are content rather than
-     * formatting and are never inspected, so a blank line in a certificate or
-     * an empty credential survives byte for byte. A @c <connection> scope
-     * holds directives, so the formatting among those goes too, while a block
-     * nested inside it stays opaque.
-     *
-     * Keep this in step with @c comment_start() and @c strip_separators() in
-     * the backend's ovpn-import.c, which do the same to a profile on import.
+     * The body of a block is kept verbatim and not looked into: the lines of
+     * an opaque payload (@c <ca>, @c <key>, an inline @c <auth-user-pass>, an
+     * unknown @c <tag>) are content, and a @c <connection> scope's lines,
+     * formatting and all, are exactly what the backend keeps of it too.
      */
     static Openvpn3Profile fromText(const QString &text);
 
-    /** The profile text. Byte for byte the input of fromText() but for the
-     * formatting it dropped, and only changed entries are re-rendered. */
+    /** The profile text: byte for byte the input of fromText() where nothing
+     * was changed, and only changed entries re-rendered. */
     QString toText() const;
+
+    /** The document as openvpn3 reads it: every entry, with the formatting
+     * -- comment and blank lines, comments at the end of a line, and those
+     * inside a @c <connection> scope -- left out. For looking at, and for
+     * comparing two documents by what they mean; never what is stored. */
+    QString optionsText() const;
 
     bool isEmpty() const
     {
@@ -184,7 +200,8 @@ public:
      *
      * This is for looking, not for editing: the indexes of the editing methods
      * address the top level, which is the only place they change anything.
-     * Keep it in step with @c option_scopes in the backend's ovpn-import.c.
+     * What openvpn3 actually uses from a scope is narrower; see
+     * connectionCaveats().
      */
     QList<Openvpn3Entry> optionEntries() const;
     //! Entries called @p name anywhere optionEntries() reaches, in order.
@@ -201,20 +218,79 @@ public:
     QStringList remoteHosts() const;
 
     /**
-     * True when this profile is not self-contained.
+     * True when this profile is not self-contained at its top level.
      *
      * openvpn3 is given one profile and nothing else, so a profile that points
      * at a file, or that carries credentials inline, has to go through the
-     * backend's normalizer before it can be stored. This only decides whether
+     * backend's importer before it can be stored. This only decides whether
      * to ask; what the answer looks like is the backend's to say.
+     *
+     * Only the top level counts, because only the top level is what the
+     * backend resolves: a reference inside a @c <connection> scope is kept as
+     * written by the import, and openvpn3 does not read it. See
+     * connectionCaveats().
      */
     bool needsNormalization() const;
+    //! Whether the top-level entry at @p index is one needsNormalization() means.
+    bool needsNormalizationAt(int index) const;
+
+    /** Something about a @c <connection> scope the user should know, because
+     * openvpn3 will not do with it what OpenVPN 2 would. */
+    struct ConnectionCaveat {
+        enum Kind {
+            //! An option openvpn3 does not read from a scope: only
+            //! @c remote, @c proto and @c port are taken from one.
+            IgnoredOption,
+            //! A file reference, which the backend does not inline in a scope.
+            FileReference,
+            //! The scope is past the size openvpn3 accepts for one.
+            TooLarge,
+        };
+        Kind kind;
+        //! Which @c <connection> block, counting from 1.
+        int block = 0;
+        //! The option, for IgnoredOption and FileReference.
+        QString name;
+        //! The file named, for FileReference; the estimated size, for TooLarge.
+        QString detail;
+    };
+    /**
+     * What openvpn3 will not do with this profile's @c <connection> scopes.
+     *
+     * openvpn3's RemoteList (openvpn/client/remotelist.hpp) parses each scope
+     * as an option list of its own, takes @c remote, @c proto and @c port from
+     * it and nothing else, and refuses a scope whose accounted size -- its
+     * text, comments included, plus 64 bytes per option and 16 per argument --
+     * reaches 4096. None of that is a reason to change the document: the scope
+     * means what it says to OpenVPN 2, and the backend keeps it as written. It
+     * is a reason to say so.
+     */
+    QList<ConnectionCaveat> connectionCaveats() const;
+    /**
+     * The name of the first block whose tags the backend's importer reads
+     * differently from openvpn3, or an empty string when they agree.
+     *
+     * openvpn3 opens a block on a line whose one lexed word is a tag and
+     * closes it only on a line that is exactly the closing tag. The importer
+     * (ovpn-import.c) compares the line stripped of whitespace instead: it
+     * does not see an opening tag that is quoted or has a comment after it,
+     * and it does see an indented closing tag. Where they disagree, the
+     * importer would read what openvpn3 holds as a scope or a payload as
+     * directives -- and inline the files or lift the credentials in it.
+     */
+    QString importerTagDisagreement() const;
+    /** openvpn3's accounting for one @c <connection> body; see
+     * connectionCaveats(). */
+    static int connectionBlockCost(const QString &body);
+    //! The size at and above which openvpn3 refuses a @c <connection> block.
+    static constexpr int kMaxConnectionBlockCost = 4096;
 
     //! True when the document's lines end in CRLF rather than LF.
     bool usesCrlf() const;
 
     /**
-     * True when the profile carries key material a passphrase could unlock.
+     * True when the profile carries key material a passphrase could unlock,
+     * at the top level: openvpn3 reads none from a @c <connection> block.
      *
      * An unencrypted PEM key needs none, so asking for one would be a field
      * nothing ever reads. A PKCS#12 bundle or a key this profile only points
@@ -222,19 +298,52 @@ public:
      */
     bool mayNeedPrivateKeyPassphrase() const;
 
-    //! Replaces the arguments of one entry and nothing else.
+    /** Replaces the arguments of one entry and nothing else. The line is
+     * re-rendered; the comment at its end and the formatting in front of it
+     * stay. */
     void setArguments(int index, const QStringList &arguments);
-    /** Replaces the body of one block and nothing else. A @c <connection>
-     * body holds directives, so the formatting among them goes the way
-     * fromText() takes it; any other body is opaque payload and is stored
-     * byte for byte. */
+    /** Replaces the body of one block and nothing else, byte for byte; in a
+     * document with CRLF lines the body's lines get CRLF too. */
     void setBody(int index, const QString &body);
+    /** Renames one entry, keeping its arguments or body, its comment and the
+     * formatting in front of it. */
+    void rename(int index, const QString &name);
+    /** Puts @p entry where entry @p index is. The formatting goes with the
+     * entries: what @p entry carries comes with it, and what the old entry
+     * carried goes with that one. */
     void replace(int index, const Openvpn3Entry &entry);
+    /**
+     * Replaces entry @p index with @p entries, in its place.
+     *
+     * The formatting in front of the old entry goes in front of the first
+     * new one, and a comment at the end of its line becomes a comment line of
+     * its own in front of them, so that it still says what it said. With no
+     * entries at all this is removeAt().
+     */
+    void replaceWith(int index, const QList<Openvpn3Entry> &entries);
+    /** Removes one entry. The comment and blank lines in front of it stay in
+     * the document, in front of whatever follows, and a comment at the end of
+     * its line stays as a comment line of its own where the line was. */
     void removeAt(int index);
     void removeAll(const QString &name);
+    /** Appends @p entry after the last entry, in front of any formatting the
+     * document ends with. */
     int append(const Openvpn3Entry &entry);
+    /** Inserts @p entry in front of entry @p index and the formatting that
+     * entry carries. */
     void insert(int index, const Openvpn3Entry &entry);
+    /** Moves one entry; see reorder() for what happens to the formatting. */
     void move(int from, int to);
+    /**
+     * Puts the entries with the ids @p ids, in that order, in the positions
+     * @p places, which they occupy between them now.
+     *
+     * The formatting is split the way a reader would: the comment lines
+     * directly in front of an entry are about it and go where it goes, while
+     * a blank line, and anything in front of one, belongs to the place in the
+     * document and stays there for whichever entry ends up in it.
+     */
+    void reorder(const QList<int> &places, const QList<quint64> &ids);
 
     /** Sets the arguments of the first @p name directive, appending it when
      * there is none. Later duplicates are left alone: they are the user's. */
@@ -246,20 +355,26 @@ public:
     void setBlock(const QString &name, const QString &body);
 
     static Openvpn3Entry directive(const QString &name, const QStringList &arguments = {});
-    //! A @c <name> block; its body is treated as setBody() treats one.
+    //! A @c <name> block with @p body, verbatim.
     static Openvpn3Entry block(const QString &name, const QString &body);
 
-    /** Splits a directive line the way OpenVPN does: double quotes allow
-     * backslash escapes, single quotes are literal, an unquoted @c # or @c ;
-     * starts a comment. */
+    /** Splits a directive line the way openvpn3 does (Split::by_space over
+     * OptionList::LexComment): a backslash escapes the next character
+     * everywhere, quotes group, an unquoted, unescaped @c # or @c ; starts a
+     * comment anywhere, and escaped whitespace still separates. */
     static QStringList splitArguments(const QString &line);
     //! Quotes @p argument only when it would not survive splitArguments().
     static QString quoteArgument(const QString &argument);
 
 private:
-    static QString render(const Openvpn3Entry &entry);
+    //! The line terminator of the document: the first one it has, or LF.
+    QString newline() const;
+    QString textOf(const Openvpn3Entry &entry, const QString &newline) const;
+    static QString render(const Openvpn3Entry &entry, const QString &newline);
 
     QList<Openvpn3Entry> m_entries;
+    //! Comment and blank lines after the last entry, verbatim.
+    QString m_trailing;
 };
 
 #endif // PLASMA_NM_OPENVPN3_PROFILE_H

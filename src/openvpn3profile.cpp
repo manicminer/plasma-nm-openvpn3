@@ -6,6 +6,8 @@
 
 #include "openvpn3profile.h"
 
+#include <utility>
+
 namespace
 {
 
@@ -45,8 +47,7 @@ bool isAsciiSpace(QChar c)
  * entry of the document at all.
  *
  * What counts as nothing is what the backend's importer strips a line down to
- * with @c g_strchug() and @c chomp_separators(), both of which go by
- * @c g_ascii_isspace(). That is @c isAsciiSpace() above less @c '\\v', which
+ * with @c g_strstrip(), which goes by @c g_ascii_isspace(). That is @c isAsciiSpace() above less @c '\\v', which
  * GLib -- unlike C's @c isspace() -- does not count: so a line of vertical
  * tabs is a value for the importer, and has to stay a value here too, or the
  * two disagree about which lines a profile has. Unicode separators are not
@@ -73,85 +74,44 @@ bool isClosingTag(const QString &stripped)
     return stripped.size() > 3 && stripped.startsWith(QLatin1String("</")) && stripped.endsWith(u'>');
 }
 
-/** Blocks that hold options rather than an opaque payload. The backend's
- * option_scopes, which is the list openvpn3 itself goes by. */
+/** Blocks that hold options rather than an opaque payload: the one openvpn3
+ * parses as an option list of its own (RemoteList), and the one the backend's
+ * importer keeps as written. */
 bool isOptionScope(const QString &name)
 {
     return name == QLatin1String("connection");
 }
 
 /**
- * Where the comment on @p line starts, or -1 if it has none.
+ * Where the comment on @p line starts, or -1 if it has none: where openvpn3,
+ * which is what reads the stored profile, stops reading the line.
  *
- * The two OpenVPN lexers do not agree on this, so what counts here is what
- * both of them read as a comment:
+ * That is openvpn3's @c OptionList::LexComment (openvpn/common/options.hpp):
+ * a @c # or @c ; outside quotes and not escaped by a backslash, anywhere in
+ * the line -- glued to the middle of a word as well. A backslash escapes the
+ * character after it everywhere, inside single quotes too, and a quote of
+ * one kind does not end inside a quote of the other.
  *
- *  - OpenVPN 2 (@c parse_line(), src/openvpn/options_parse.c) only looks for
- *    a @c # or @c ; at the start of a parameter, and not inside quotes, so
- *    @c a#b is the literal value a#b.
- *  - openvpn3 (@c OptionList::LexComment, openvpn/common/options.hpp) looks
- *    anywhere outside quotes, but a backslash escapes the character: @c a#b
- *    is the value @c a, and @c \# is a literal @c #.
- *
- * Where they disagree -- a character glued to the middle of a word, an
- * escaped one -- the line is left alone. openvpn3 is what reads the stored
- * profile and it already ignores whatever it takes for a comment, so keeping
- * those characters cannot change what an option means, while cutting them
- * off could. Keep this in step with comment_start() in the backend's
- * ovpn-import.c.
- *
- * "Outside quotes" has to satisfy both of them too, and they do not even
- * agree on where a quote ends: a backslash inside single quotes is a literal
- * character for OpenVPN 2 (@c parse_line() skips its escape handling in
- * @c STATE_READING_SQUOTED_PARM), so the apostrophe after it closes the
- * quote, while openvpn3 lets it escape that apostrophe and stays inside. Both
- * quote states are therefore tracked, and a character counts as outside
- * quotes only when neither lexer has it in one. That is what keeps
- * @c {setenv a 'x\' # literal'} whole -- the value openvpn3 reads.
+ * OpenVPN 2 reads some of those lines differently (@c a#b is a literal value
+ * for it, and a backslash inside single quotes is literal). The line is kept
+ * as written either way; what an entry says, and what an edit writes back,
+ * is what openvpn3 reads.
  */
 int commentStart(const QString &line)
 {
-    bool ov2Single = false;
-    bool ov2Double = false;
-    bool ov2Escaped = false;
-    bool ov3Single = false;
-    bool ov3Double = false;
-    bool ov3Escaped = false;
-    bool wordStart = true;
-
+    bool single = false;
+    bool dbl = false;
     for (int i = 0; i < line.size(); ++i) {
         const QChar c = line.at(i);
-        const bool quoted = ov2Single || ov2Double || ov3Single || ov3Double;
-        const bool escaped = ov2Escaped || ov3Escaped;
-
-        if (wordStart && !quoted && !escaped && (c == u'#' || c == u';')) {
+        if (c == u'\\') {
+            ++i; // escapes whatever follows, if anything does
+        } else if (c == u'"' && !single) {
+            dbl = !dbl;
+        } else if (c == u'\'' && !dbl) {
+            single = !single;
+        } else if ((c == u'#' || c == u';') && !single && !dbl) {
             return i;
         }
-
-        // OpenVPN 2: a backslash is not an escape inside single quotes.
-        if (ov2Escaped) {
-            ov2Escaped = false;
-        } else if (c == u'\\' && !ov2Single) {
-            ov2Escaped = true;
-        } else if (c == u'"' && !ov2Single) {
-            ov2Double = !ov2Double;
-        } else if (c == u'\'' && !ov2Double) {
-            ov2Single = !ov2Single;
-        }
-
-        // openvpn3: a backslash escapes everywhere, quotes included.
-        if (ov3Escaped) {
-            ov3Escaped = false;
-        } else if (c == u'\\') {
-            ov3Escaped = true;
-        } else if (c == u'"' && !ov3Single) {
-            ov3Double = !ov3Double;
-        } else if (c == u'\'' && !ov3Double) {
-            ov3Single = !ov3Single;
-        }
-
-        // Only unquoted, unescaped whitespace starts the next word.
-        wordStart = !quoted && !escaped && isAsciiSpace(c);
     }
     return -1;
 }
@@ -174,45 +134,41 @@ void chopTrailingSeparators(QString &text)
     }
 }
 
-/** @p line without its terminator and without the trailing whitespace that
- * separates rather than belongs to the last value -- what the arguments are
- * read from. @c trimmed() cannot be: it cannot tell an escaped trailing space
- * from a separator, and reading one as a separator loses it from the value the
- * next save writes out. */
-QString argumentsOf(const QString &line)
+/** @p line split into its content and its terminator ("\n", "\r\n" or
+ * nothing). */
+std::pair<QString, QString> splitTerminator(const QString &line)
 {
-    QString text = line;
-    while (text.endsWith(u'\n') || text.endsWith(u'\r')) {
-        text.chop(1);
-    }
-    chopTrailingSeparators(text);
-    return text;
-}
-
-/** @p line without the comment starting at @p cut, its terminator kept. An
- * empty string when nothing but whitespace came before the comment, which is
- * how a line that is only a comment is recognised. */
-QString withoutComment(const QString &line, int cut)
-{
-    QString terminator;
     if (line.endsWith(QLatin1String("\r\n"))) {
-        terminator = QStringLiteral("\r\n");
-    } else if (line.endsWith(u'\n')) {
-        terminator = QStringLiteral("\n");
+        return {line.chopped(2), QStringLiteral("\r\n")};
     }
-
-    QString kept = line.left(cut);
-    chopTrailingSeparators(kept);
-    return kept.isEmpty() ? QString() : kept + terminator;
+    if (line.endsWith(u'\n')) {
+        return {line.chopped(1), QStringLiteral("\n")};
+    }
+    return {line, QStringLiteral("")};
 }
 
-/** A @c <connection> body with the formatting among its directives -- the
- * comments and the blank lines -- dropped. Any other block's body is opaque
- * payload -- a certificate, a key, a credential -- and comes back exactly as
- * it was given, blank lines and all. */
-QString normalizedBody(const QString &name, const QString &body)
+/** The leading formatting split where a reader would: everything up to and
+ * including the last blank line belongs to the place in the document, and the
+ * comment lines after it are about the entry that follows them. */
+std::pair<QString, QString> splitFormatting(const QString &leading)
 {
-    return isOptionScope(name) ? Openvpn3Profile::fromText(body).toText() : body;
+    const QStringList lines = linesWithTerminators(leading);
+    int attached = lines.size();
+    while (attached > 0 && !isBlankLine(lines.at(attached - 1))) {
+        --attached;
+    }
+    return {lines.mid(0, attached).join(QString()), lines.mid(attached).join(QString())};
+}
+
+/** @p text with every line terminated by @p newline. */
+QString withNewlines(const QString &text, const QString &newline)
+{
+    QString converted = text;
+    converted.replace(QLatin1String("\r\n"), QLatin1String("\n"));
+    if (newline != QLatin1String("\n")) {
+        converted.replace(u'\n', newline);
+    }
+    return converted;
 }
 
 /** Directives naming a file the backend inlines when it normalises. Its
@@ -243,70 +199,46 @@ quint64 Openvpn3Entry::nextId()
 
 QStringList Openvpn3Profile::splitArguments(const QString &line)
 {
+    // openvpn3's Split::by_space() over LexComment, character for character:
+    // a backslash takes the next character as it is (and an escaped space
+    // still separates, because by_space only asks whether the character it
+    // was handed is a space), quotes group without being kept, a comment ends
+    // the line, and a quote opened and closed makes an argument even when
+    // nothing was between them.
     QStringList words;
-    const int length = line.size();
-    int i = 0;
-
-    while (i < length) {
-        while (i < length && isAsciiSpace(line.at(i))) {
-            ++i;
-        }
-        if (i >= length || line.at(i) == u'#' || line.at(i) == u';') {
+    QString term;
+    bool defined = false;
+    bool single = false;
+    bool dbl = false;
+    for (int i = 0; i < line.size(); ++i) {
+        QChar c = line.at(i);
+        if (c == u'\\') {
+            if (++i >= line.size()) {
+                break; // nothing to escape
+            }
+            c = line.at(i);
+        } else if (c == u'"' && !single) {
+            dbl = !dbl;
+            defined = true;
+            continue;
+        } else if (c == u'\'' && !dbl) {
+            single = !single;
+            defined = true;
+            continue;
+        } else if ((c == u'#' || c == u';') && !single && !dbl) {
             break;
         }
-        QString word;
-        while (i < length && !isAsciiSpace(line.at(i))) {
-            const QChar c = line.at(i);
-            if (c == u'"' || c == u'\'') {
-                const QChar quote = c;
-                ++i;
-                while (i < length && line.at(i) != quote) {
-                    // Inside double quotes a backslash escapes, for both
-                    // lexers. Inside single quotes they part company, and
-                    // this follows OpenVPN 2: parse_line() turns its escape
-                    // handling off in STATE_READING_SQUOTED_PARM, so the
-                    // apostrophe after a backslash closes the quote, while
-                    // openvpn3's StandardLex lets the backslash escape that
-                    // apostrophe and stays inside.
-                    //
-                    // That choice is deliberate and it is not free. openvpn3
-                    // is what reads the stored profile, so for a value like
-                    // {setenv a 'x\' # literal'} the table shows the OpenVPN 2
-                    // reading and openvpn3 uses the other one; editing another
-                    // argument of such a line rewrites it as the table read
-                    // it. commentStart() is why the line survives being read
-                    // at all -- it treats a character as a comment only where
-                    // both lexers agree, so nothing is cut from it -- and an
-                    // untouched entry is written back from its original text.
-                    // See docs/limitations.md.
-                    if (quote == u'"' && line.at(i) == u'\\' && i + 1 < length) {
-                        ++i;
-                    }
-                    word += line.at(i);
-                    ++i;
-                }
-                if (i < length) {
-                    ++i; // the closing quote
-                }
-            } else if (c == u'\\' && i + 1 < length) {
-                // Outside quotes a backslash escapes the next character for
-                // both lexers: OpenVPN 2's parse_line() leaves its escape
-                // handling off only inside single quotes, and openvpn3's
-                // StandardLex never leaves it off at all. So an escaped
-                // separator is part of the value in front of it rather than
-                // the end of it -- reading it as the end would split one
-                // value into two, and the save that followed would write the
-                // split out as the truth. A backslash with nothing after it
-                // escapes nothing and stays the character it is.
-                ++i;
-                word += line.at(i);
-                ++i;
-            } else {
-                word += c;
-                ++i;
-            }
+        if (!isAsciiSpace(c) || single || dbl) {
+            term += c;
+            defined = true;
+        } else if (defined) {
+            words.append(term);
+            term.clear();
+            defined = false;
         }
-        words.append(word);
+    }
+    if (defined) {
+        words.append(term);
     }
     return words;
 }
@@ -346,93 +278,109 @@ Openvpn3Profile Openvpn3Profile::fromText(const QString &text)
 {
     Openvpn3Profile profile;
     const QStringList lines = linesWithTerminators(text);
+    // Comment and blank lines read so far, waiting for the entry they are in
+    // front of.
+    QString formatting;
 
     for (int i = 0; i < lines.size(); ++i) {
         const QString &raw = lines.at(i);
-        // Formatting is not an entry and never reaches one: a line that is
-        // only a comment or only whitespace is skipped, and a comment on a
-        // directive is cut off the source the entry keeps.  The lines of an
-        // opaque <tag> payload are content rather than formatting and are not
-        // read as lines at all -- the block below swallows them whole, so a
-        // blank line in a certificate or an empty credential is untouched.
+        // Formatting is not an entry: a line that is only a comment or only
+        // whitespace is held for the next entry. The lines of a <tag> payload
+        // are not read as lines at all -- the block below swallows them
+        // whole, so a blank line in a certificate or an empty credential is
+        // never mistaken for formatting.
         if (isBlankLine(raw)) {
+            formatting += raw;
             continue;
         }
-        const int comment = commentStart(raw);
-        QString line = raw;
-        if (comment >= 0) {
-            const QString cut = withoutComment(raw, comment);
+        const auto [content, terminator] = splitTerminator(raw);
+        QString code = content;
+        QString comment;
+        const int cut = commentStart(content);
+        if (cut >= 0) {
+            QString kept = content.left(cut);
+            chopTrailingSeparators(kept);
+            if (kept.isEmpty()) {
+                formatting += raw;
+                continue;
+            }
             // Cutting a comment must not turn a line into a closing tag the
             // raw line was not one: openvpn3 matches every closing tag
             // against the raw line, so {</connection> # x} is no boundary for
-            // it even when a real closer follows below. Cutting here would
-            // invent one there and move every directive up to the real closer
-            // out of the scope. Such a line is kept exactly as it stands
-            // instead -- the comment stays, and openvpn3 ignores it where it
-            // is. Keep this in step with the backend's ovpn-import.c.
-            if (!isClosingTag(cut.trimmed())) {
-                line = cut;
+            // it even when a real closer follows below. Such a line is kept
+            // whole as a directive -- the comment stays part of it, and
+            // openvpn3 ignores it where it is. Keep this in step with the
+            // backend's ovpn-import.c.
+            if (!isClosingTag(kept.trimmed())) {
+                code = kept;
+                comment = content.mid(kept.size());
             }
         }
-        if (line.isEmpty()) {
-            continue;
-        }
-        const QString stripped = line.trimmed();
-        Openvpn3Entry entry;
-        entry.m_verbatim = true;
-        entry.m_source = line;
 
-        if (isOpeningTag(stripped)) {
+        // openvpn3 opens a block on a line whose one lexed word is a tag, so
+        // quotes and padding around it do not matter.
+        const QStringList words = splitArguments(code);
+        Openvpn3Entry entry;
+        entry.m_parsed = true;
+        entry.m_verbatim = true;
+        entry.m_leading = formatting;
+        entry.m_comment = comment;
+        entry.m_terminator = terminator;
+        formatting.clear();
+
+        if (words.size() == 1 && isOpeningTag(words.first())) {
             entry.kind = Openvpn3Entry::Block;
-            entry.name = stripped.mid(1, stripped.size() - 2);
+            entry.name = words.first().mid(1, words.first().size() - 2);
             const QString closing = QLatin1String("</") + entry.name + QLatin1Char('>');
             QString body;
             int end = i + 1;
             for (; end < lines.size(); ++end) {
-                // openvpn3 matches a closing tag against the raw line, so a
-                // comment after one does not close the block for it either.
-                if (lines.at(end).trimmed() == closing) {
+                // openvpn3 matches a closing tag against the raw line, its
+                // terminator aside (is_close_tag()): neither padding nor a
+                // comment around one closes the block for it.
+                if (splitTerminator(lines.at(end)).first == closing) {
                     break;
                 }
                 body += lines.at(end);
             }
+            entry.body = body;
             if (end < lines.size()) {
-                // A scope's lines are directives, so the formatting among them
-                // is formatting. Parsing the body is how it goes, and it
-                // leaves a block nested in here opaque, payload and all.
-                body = normalizedBody(entry.name, body);
-                entry.body = body;
-                entry.m_source = line + body + lines.at(end);
+                entry.m_source = raw + body + lines.at(end);
+                entry.m_terminator = splitTerminator(lines.at(end)).second;
                 i = end;
             } else {
                 // Unterminated: everything that is left belongs to this block
                 // and is kept exactly as it is rather than repaired -- a scope
                 // whose closing tag carries a comment is not closed for
                 // openvpn3 either, and repairing it here would invent one.
-                entry.body = body;
-                entry.m_source = line + body;
+                entry.m_source = raw + body;
+                entry.m_terminator = splitTerminator(lines.last()).second;
                 i = lines.size() - 1;
             }
         } else {
-            const QStringList words = splitArguments(argumentsOf(line));
+            entry.m_source = raw;
             entry.name = words.value(0);
             entry.arguments = words.mid(1);
         }
         profile.m_entries.append(entry);
     }
+    profile.m_trailing = formatting;
     return profile;
 }
 
-QString Openvpn3Profile::render(const Openvpn3Entry &entry)
+QString Openvpn3Profile::render(const Openvpn3Entry &entry, const QString &newline)
 {
+    // A changed entry keeps what was around it: the terminator its line had
+    // -- none, for a final line without one -- and the comment at its end.
+    const QString terminator = entry.m_parsed ? entry.m_terminator : newline;
     switch (entry.kind) {
     case Openvpn3Entry::Block: {
-        QString text = u'<' + entry.name + QLatin1String(">\n");
+        QString text = u'<' + entry.name + u'>' + entry.m_comment + newline;
         text += entry.body;
         if (!entry.body.isEmpty() && !entry.body.endsWith(u'\n')) {
-            text += u'\n';
+            text += newline;
         }
-        text += QLatin1String("</") + entry.name + QLatin1String(">\n");
+        text += QLatin1String("</") + entry.name + u'>' + terminator;
         return text;
     }
     case Openvpn3Entry::Directive:
@@ -443,30 +391,94 @@ QString Openvpn3Profile::render(const Openvpn3Entry &entry)
     for (const QString &argument : entry.arguments) {
         text += u' ' + quoteArgument(argument);
     }
-    text += u'\n';
-    return text;
+    // A comment that was glued to the last word is still a comment for
+    // openvpn3, but a space in front of it makes it one for everybody.
+    if (!entry.m_comment.isEmpty() && !isAsciiSpace(entry.m_comment.front())) {
+        text += u' ';
+    }
+    return text + entry.m_comment + terminator;
+}
+
+QString Openvpn3Profile::newline() const
+{
+    // The convention of the document is that of its first terminated line,
+    // whatever carries it.
+    const QString text = [this] {
+        QString all;
+        for (const Openvpn3Entry &entry : m_entries) {
+            all += entry.m_leading;
+            if (entry.m_parsed) {
+                all += entry.m_source;
+            }
+            if (all.contains(u'\n')) {
+                break;
+            }
+        }
+        return all + m_trailing;
+    }();
+    const int end = text.indexOf(u'\n');
+    return end > 0 && text.at(end - 1) == u'\r' ? QStringLiteral("\r\n") : QStringLiteral("\n");
+}
+
+QString Openvpn3Profile::textOf(const Openvpn3Entry &entry, const QString &newline) const
+{
+    return entry.m_leading + (entry.m_verbatim ? entry.m_source : render(entry, newline));
 }
 
 QString Openvpn3Profile::toText() const
 {
-    // A formerly final, unterminated entry may now have a successor. Keep
-    // its source intact, but separate entries using the original convention.
-    QString newline = QStringLiteral("\n");
-    for (const Openvpn3Entry &entry : m_entries) {
-        const int end = entry.m_source.indexOf(u'\n');
-        if (end >= 0) {
-            if (end > 0 && entry.m_source.at(end - 1) == u'\r') {
-                newline = QStringLiteral("\r\n");
-            }
-            break;
-        }
-    }
+    const QString nl = newline();
     QString text;
-    for (const Openvpn3Entry &entry : m_entries) {
-        if (!text.isEmpty() && !text.endsWith(u'\n')) {
-            text += newline;
+    const auto add = [&text, &nl](const QString &piece) {
+        if (piece.isEmpty()) {
+            return;
         }
-        text += entry.m_verbatim ? entry.m_source : render(entry);
+        // A formerly final, unterminated line may now have a successor. Keep
+        // its source intact, but separate it using the document's convention.
+        if (!text.isEmpty() && !text.endsWith(u'\n')) {
+            text += nl;
+        }
+        text += piece;
+    };
+    for (const Openvpn3Entry &entry : m_entries) {
+        add(textOf(entry, nl));
+    }
+    add(m_trailing);
+    return text;
+}
+
+QString Openvpn3Profile::optionsText() const
+{
+    const QString nl = newline();
+    QString text;
+    for (const Openvpn3Entry &original : m_entries) {
+        Openvpn3Entry entry = original;
+        QString piece;
+        if (!entry.m_verbatim) {
+            entry.m_comment.clear();
+            if (entry.isBlock() && isOptionScope(entry.name)) {
+                entry.body = fromText(entry.body).optionsText();
+            }
+            piece = render(entry, nl);
+        } else {
+            // The opening line without its comment, then the rest.
+            const int end = entry.m_source.indexOf(u'\n');
+            const QString first = end < 0 ? entry.m_source : entry.m_source.left(end + 1);
+            const auto [content, terminator] = splitTerminator(first);
+            piece = content.chopped(entry.m_comment.size()) + terminator;
+            QString rest = entry.m_source.mid(first.size());
+            if (entry.isBlock() && isOptionScope(entry.name) && rest.size() > entry.body.size()) {
+                // A scope's lines are options; its formatting goes too -- but
+                // not that of an unterminated one, which openvpn3 reads as
+                // no scope at all and which is shown as it stands.
+                rest = fromText(entry.body).optionsText() + rest.mid(entry.body.size());
+            }
+            piece += rest;
+        }
+        if (!text.isEmpty() && !text.endsWith(u'\n')) {
+            text += nl;
+        }
+        text += piece;
     }
     return text;
 }
@@ -538,42 +550,150 @@ QStringList Openvpn3Profile::remoteHosts() const
 
 bool Openvpn3Profile::needsNormalization() const
 {
-    const QList<Openvpn3Entry> options = optionEntries();
-    for (const Openvpn3Entry &entry : options) {
-        if (entry.isBlock()) {
-            // Credentials typed into the editor: the username and password
-            // belong with the connection, not in the profile.
-            if (entry.name == QLatin1String("auth-user-pass")) {
-                return true;
+    for (int i = 0; i < m_entries.size(); ++i) {
+        if (needsNormalizationAt(i)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool Openvpn3Profile::needsNormalizationAt(int index) const
+{
+    const Openvpn3Entry &entry = m_entries.at(index);
+    if (entry.isBlock()) {
+        // Credentials typed into the editor: the username and password
+        // belong with the connection, not in the profile.
+        return entry.name == QLatin1String("auth-user-pass");
+    }
+    if (entry.arguments.isEmpty()) {
+        return false;
+    }
+    if (entry.name == QLatin1String("auth-user-pass")) {
+        return true; // a credentials file
+    }
+    if (!isFileDirective(entry.name) || entry.value() == QLatin1String("[inline]")) {
+        return false;
+    }
+    // A directory openvpn reads itself, not a file to inline.
+    return !(entry.name == QLatin1String("crl-verify") && entry.arguments.value(1) == QLatin1String("dir"));
+}
+
+QString Openvpn3Profile::importerTagDisagreement() const
+{
+    // What ovpn-import.c compares: the line with ASCII whitespace stripped
+    // from both ends (g_strstrip), comment and quotes and all.
+    const auto stripped = [](const QString &line) {
+        QString text = splitTerminator(line).first;
+        while (!text.isEmpty() && isAsciiSpace(text.front())) {
+            text.remove(0, 1);
+        }
+        while (!text.isEmpty() && isAsciiSpace(text.back())) {
+            text.chop(1);
+        }
+        return text;
+    };
+    for (const Openvpn3Entry &entry : m_entries) {
+        const QString first = stripped(entry.m_source.left(entry.m_source.indexOf(u'\n') + 1));
+        if (entry.isDirective()) {
+            // A line the importer takes for an opening tag and openvpn3 does
+            // not: what follows would be payload to one and directives to
+            // the other.
+            if (isOpeningTag(first)) {
+                return first.mid(1, first.size() - 2);
             }
             continue;
         }
-        if (!entry.isDirective() || entry.arguments.isEmpty()) {
-            continue;
+        if (!entry.m_parsed) {
+            continue; // rendered here, so canonical
         }
-        if (entry.name == QLatin1String("auth-user-pass")) {
-            return true; // a credentials file
+        if (first != u'<' + entry.name + u'>') {
+            return entry.name;
         }
-        if (!isFileDirective(entry.name) || entry.value() == QLatin1String("[inline]")) {
-            continue;
+        // The importer would close the block early on a padded closing tag.
+        const QString closing = QLatin1String("</") + entry.name + u'>';
+        for (const QString &line : linesWithTerminators(entry.body)) {
+            if (stripped(line) == closing) {
+                return entry.name;
+            }
         }
-        if (entry.name == QLatin1String("crl-verify") && entry.arguments.value(1) == QLatin1String("dir")) {
-            continue; // a directory openvpn reads itself, not a file to inline
-        }
-        return true;
     }
-    return false;
+    return QString();
+}
+
+int Openvpn3Profile::connectionBlockCost(const QString &body)
+{
+    // What OptionList::parse_from_config() charges a block with when it is
+    // given Limits: the text, every line counted with the '\n' openvpn3 joins
+    // it with, then OPT_OVERHEAD (64) per option and TERM_OVERHEAD (16) per
+    // word of every option line it lexes. A nested block's payload is text
+    // and nothing more; comment and blank lines are text too.
+    int cost = 0;
+    const QStringList lines = linesWithTerminators(body);
+    QString nested;
+    for (const QString &raw : lines) {
+        const QString line = splitTerminator(raw).first;
+        cost += line.toUtf8().size() + 1;
+        const QString stripped = line.trimmed();
+        if (!nested.isEmpty()) {
+            if (line == nested) {
+                nested.clear();
+                cost += 64;
+            }
+            continue;
+        }
+        if (isBlankLine(raw) || stripped.startsWith(u'#') || stripped.startsWith(u';')) {
+            continue;
+        }
+        const QStringList words = splitArguments(line);
+        if (words.isEmpty()) {
+            continue;
+        }
+        cost += 16 * words.size();
+        if (words.size() == 1 && isOpeningTag(words.first())) {
+            nested = QLatin1String("</") + words.first().mid(1);
+        } else {
+            cost += 64;
+        }
+    }
+    return cost;
+}
+
+QList<Openvpn3Profile::ConnectionCaveat> Openvpn3Profile::connectionCaveats() const
+{
+    QList<ConnectionCaveat> caveats;
+    int block = 0;
+    for (const Openvpn3Entry &entry : m_entries) {
+        if (!entry.isBlock() || !isOptionScope(entry.name)) {
+            continue;
+        }
+        ++block;
+        const Openvpn3Profile scope = fromText(entry.body);
+        for (const Openvpn3Entry &option : scope.m_entries) {
+            if (option.name == QLatin1String("remote") || option.name == QLatin1String("proto") || option.name == QLatin1String("port")) {
+                continue;
+            }
+            if (option.isDirective() && isFileDirective(option.name) && !option.arguments.isEmpty() && option.value() != QLatin1String("[inline]")) {
+                caveats.append({ConnectionCaveat::FileReference, block, option.name, option.value()});
+            } else {
+                caveats.append({ConnectionCaveat::IgnoredOption, block, option.name, QString()});
+            }
+        }
+        const int cost = connectionBlockCost(entry.body);
+        if (cost >= kMaxConnectionBlockCost) {
+            caveats.append({ConnectionCaveat::TooLarge, block, QString(), QString::number(cost)});
+        }
+    }
+    return caveats;
 }
 
 bool Openvpn3Profile::usesCrlf() const
 {
     int crlf = 0;
     int lf = 0;
-    for (const Openvpn3Entry &entry : m_entries) {
-        const QString text = entry.m_verbatim ? entry.m_source : render(entry);
-        for (int i = text.indexOf(u'\n'); i >= 0; i = text.indexOf(u'\n', i + 1)) {
-            (i > 0 && text.at(i - 1) == u'\r') ? ++crlf : ++lf;
-        }
+    const QString text = toText();
+    for (int i = text.indexOf(u'\n'); i >= 0; i = text.indexOf(u'\n', i + 1)) {
+        (i > 0 && text.at(i - 1) == u'\r') ? ++crlf : ++lf;
     }
     return crlf > lf;
 }
@@ -602,11 +722,14 @@ QString Openvpn3Profile::blockBody(const QString &name) const
 QString Openvpn3Profile::sourceAt(int index) const
 {
     const Openvpn3Entry &entry = m_entries.at(index);
-    return entry.m_verbatim ? entry.m_source : render(entry);
+    return entry.m_verbatim ? entry.m_source : render(entry, newline());
 }
 
 bool Openvpn3Profile::mayNeedPrivateKeyPassphrase() const
 {
+    // A <connection> block's included: openvpn3 itself takes nothing but the
+    // remote from one, but the backend's service looks for key material
+    // anywhere in the profile and asks for its passphrase.
     for (const Openvpn3Entry &entry : optionEntries()) {
         if (entry.name != QLatin1String("key") && entry.name != QLatin1String("pkcs12")) {
             continue;
@@ -641,14 +764,25 @@ void Openvpn3Profile::setArguments(int index, const QStringList &arguments)
 void Openvpn3Profile::setBody(int index, const QString &body)
 {
     Openvpn3Entry &entry = m_entries[index];
-    // A <connection> body is the scope's directives however it arrives, so a
-    // comment or a blank line put in by hand goes the same way one read from a
-    // file does. Keeping it would save an edit that vanishes on the next load.
-    const QString kept = normalizedBody(entry.name, body);
+    // A body handed back by a text box has lost its carriage returns; in a
+    // document that has them, it gets them back rather than mixing the two.
+    const QString kept = entry.body.contains(QLatin1String("\r\n")) || (!entry.m_parsed && newline() != QLatin1String("\n"))
+        ? withNewlines(body, QStringLiteral("\r\n"))
+        : body;
     if (entry.body == kept) {
         return;
     }
     entry.body = kept;
+    entry.m_verbatim = false;
+}
+
+void Openvpn3Profile::rename(int index, const QString &name)
+{
+    Openvpn3Entry &entry = m_entries[index];
+    if (entry.name == name) {
+        return;
+    }
+    entry.name = name;
     entry.m_verbatim = false;
 }
 
@@ -657,16 +791,66 @@ void Openvpn3Profile::replace(int index, const Openvpn3Entry &entry)
     m_entries[index] = entry;
 }
 
+void Openvpn3Profile::replaceWith(int index, const QList<Openvpn3Entry> &entries)
+{
+    if (entries.isEmpty()) {
+        removeAt(index);
+        return;
+    }
+    const Openvpn3Entry old = m_entries.at(index);
+    QList<Openvpn3Entry> added = entries;
+    QString leading = old.m_leading;
+    const QString comment = old.m_comment.trimmed();
+    if (!comment.isEmpty()) {
+        // The comment said something about the line it was on; on a line of
+        // its own above what replaced it, it still does.
+        leading += comment + (old.m_parsed && !old.m_terminator.isEmpty() ? old.m_terminator : newline());
+    }
+    added.first().m_leading = leading + added.first().m_leading;
+    // The last of them ends the way the old entry's line did, so a document
+    // without a final newline still has none.
+    Openvpn3Entry &last = added.last();
+    if (old.m_parsed && old.m_terminator.isEmpty() && last.m_parsed && !last.m_terminator.isEmpty()) {
+        if (last.m_verbatim) {
+            last.m_source.chop(last.m_terminator.size());
+        }
+        last.m_terminator.clear();
+    }
+    m_entries.removeAt(index);
+    for (int i = 0; i < added.size(); ++i) {
+        m_entries.insert(index + i, added.at(i));
+    }
+}
+
 void Openvpn3Profile::removeAt(int index)
 {
+    // The formatting in front of an entry is not the entry: it stays where it
+    // is, in front of whatever comes next. So does what the comment at the end
+    // of its line said, on a line of its own where the line was.
+    const Openvpn3Entry old = m_entries.at(index);
+    const QString comment = old.m_comment.trimmed();
+    const QString kept = old.m_leading + (comment.isEmpty() ? QString() : comment + (old.m_parsed ? old.m_terminator : newline()));
     m_entries.removeAt(index);
+    if (kept.isEmpty()) {
+        return;
+    }
+    if (index < m_entries.size()) {
+        m_entries[index].m_leading.prepend(kept);
+    } else {
+        // At the end, a line without a terminator is followed by nothing; give
+        // whatever was already trailing a line of its own.
+        if (!m_trailing.isEmpty() && !kept.endsWith(u'\n')) {
+            m_trailing.prepend(newline());
+        }
+        m_trailing.prepend(kept);
+    }
 }
 
 void Openvpn3Profile::removeAll(const QString &name)
 {
     const QList<int> indexes = indexesOf(name);
     for (auto it = indexes.crbegin(); it != indexes.crend(); ++it) {
-        m_entries.removeAt(*it);
+        removeAt(*it);
     }
 }
 
@@ -683,7 +867,46 @@ void Openvpn3Profile::insert(int index, const Openvpn3Entry &entry)
 
 void Openvpn3Profile::move(int from, int to)
 {
-    m_entries.move(from, to);
+    if (from == to) {
+        return;
+    }
+    // A move is a rotation of the entries between the two places.
+    const int low = qMin(from, to);
+    const int high = qMax(from, to);
+    QList<int> places;
+    QList<quint64> ids;
+    for (int i = low; i <= high; ++i) {
+        places.append(i);
+        ids.append(m_entries.at(i).id());
+    }
+    if (from < to) {
+        ids.append(ids.takeFirst());
+    } else {
+        ids.prepend(ids.takeLast());
+    }
+    reorder(places, ids);
+}
+
+void Openvpn3Profile::reorder(const QList<int> &places, const QList<quint64> &ids)
+{
+    if (places.size() != ids.size()) {
+        return;
+    }
+    QList<Openvpn3Entry> moving;
+    QStringList detached;
+    for (int i = 0; i < places.size(); ++i) {
+        const int index = indexOfId(ids.at(i));
+        if (index < 0) {
+            return;
+        }
+        moving.append(m_entries.at(index));
+        detached.append(splitFormatting(m_entries.at(places.at(i)).m_leading).first);
+    }
+    for (int i = 0; i < places.size(); ++i) {
+        Openvpn3Entry entry = moving.at(i);
+        entry.m_leading = detached.at(i) + splitFormatting(entry.m_leading).second;
+        m_entries[places.at(i)] = entry;
+    }
 }
 
 void Openvpn3Profile::setDirective(const QString &name, const QStringList &arguments)
@@ -731,6 +954,6 @@ Openvpn3Entry Openvpn3Profile::block(const QString &name, const QString &body)
     Openvpn3Entry entry;
     entry.kind = Openvpn3Entry::Block;
     entry.name = name;
-    entry.body = normalizedBody(name, body);
+    entry.body = body;
     return entry;
 }

@@ -160,6 +160,9 @@ private:
     void refreshStatus();
     void refreshMaterialRows();
     void refreshStorageChoices();
+    //! What openvpn3 will not do with the profile's <connection> blocks, for
+    //! the user to read; empty when there is nothing to say.
+    static QString connectionCaveatText(const Openvpn3Profile &profile);
     //! What the page says about a profile it has, or has not, got.
     static QString refreshedStatusText(Openvpn3Storage::Availability availability, const NMStringMap &data);
 
@@ -170,18 +173,18 @@ private:
     void fillPasswordField(PasswordField *field, const QString &key, NetworkManager::Setting::SecretFlags fallback) const;
     void storePasswordField(const PasswordField *field, const QString &key, NMStringMap &data, NMStringMap &secrets, const QString &text) const;
 
-    /** What the profile currently in front looks like once the backend has
-     * made it self-contained; cached, because the answer costs an import. */
-    struct Normalized {
-        QString of; //!< the profile text it was worked out from
-        Openvpn3Import result;
-    };
-    const Openvpn3Import &normalized(const QString &text) const;
+    /** What @p profile looks like once the backend has resolved the entries
+     * that point outside it, read now. See
+     * Openvpn3Importer::resolveReferences(). */
+    Openvpn3Import normalized(const Openvpn3Profile &profile) const;
     /** @p data and @p secrets as a whole vpn setting, with the properties
      * this page does not show carried across from the one it was given. */
     QVariantMap vpnSettingOf(const NMStringMap &data, const NMStringMap &secrets) const;
-    //! Fills the username and password fields in from a normalised profile.
+    //! Fills the username and password fields in from what was typed into
+    //! the profile, once the backend has resolved it.
     void takeCredentialsFromProfile();
+    //! Notes which entries point outside the profile as it was loaded.
+    void rememberLoadedReferences();
 
     class Private;
     Private *const d;
@@ -200,9 +203,11 @@ private:
     QSet<QString> m_editedSecretFlags;
     bool m_updating = false;
     int m_previousTab = 0;
+    //! Source text of the loaded entries that point outside the profile:
+    //! left alone until a save, however often the pages are visited.
+    QSet<QString> m_loadedReferences;
     //! The source view's text as this widget last put it there; see currentProfile().
     QString m_sourceBaseline;
-    mutable Normalized m_normalized;
 };
 
 #endif // PLASMA_NM_OPENVPN3_WIDGET_H

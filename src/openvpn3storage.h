@@ -25,12 +25,20 @@
  * agent-owned secrets in KWallet -- then holds it, or NetworkManager owns it
  * itself so that the connection can come up unattended.
  *
- * The two layouts are mutually exclusive:
+ * The layouts are mutually exclusive, and are the backend's
+ * (network-manager-openvpn3 0.2.0 and later, docs/connection-format.md):
  *
- * | mode   | @c vpn.data                                             | @c vpn.secrets |
- * | ------ | ------------------------------------------------------- | -------------- |
- * | legacy | @c profile = base64 profile                             | --             |
- * | secret | @c profile-storage = @c secret, @c profile-flags = 1\|0 | @c profile = base64 profile |
+ * | mode   | @c vpn.data                                    | @c vpn.secrets |
+ * | ------ | ---------------------------------------------- | -------------- |
+ * | legacy | @c profile = base64 profile, no @c profile-flags | --           |
+ * | secret | @c profile-flags = 1\|0, @c remote (display)    | @c profile = base64 profile |
+ *
+ * The presence of @c profile-flags is what makes a profile a secret. Before
+ * the backend settled on that, this editor wrote an explicit marker,
+ * @c profile-storage = @c secret, and a connection carrying it is still read
+ * as the secret layout -- with absent flags meaning system-owned, as
+ * NetworkManager reads them. Nothing writes the marker any more: saving such
+ * a connection removes it.
  *
  * @c profile-flags is not a Plasma invention: NetworkManager keeps the secret
  * flags of a VPN secret @c x in <tt>vpn.data["x-flags"]</tt>, so it is simply
@@ -47,8 +55,8 @@
  *   public copy must never stand in for a locked secret, and a backend that
  *   predates the layout finds no profile and fails closed.
  * - A @c profile-storage value this version does not know is refused outright
- *   rather than falling back to the data item: whatever is in there belongs
- *   to the layout the connection used before.
+ *   rather than falling back to the data item or the secret, flags or not:
+ *   whatever is in there belongs to a layout this version cannot read.
  * - A profile is never written to @c vpn.data as a fallback for an
  *   unavailable wallet.
  * - @c NotSaved and @c NotRequired are rejected for the profile, on reading
@@ -114,12 +122,19 @@ bool recordsProfileFlags(const NMStringMap &data);
  */
 bool hostRequestsSecrets(const NMStringMap &data);
 
-/** Stores @p profile as a public data item and clears the secret layout. */
+/** The host the backend names @p profile by in @c vpn.data["remote"]: the
+ * first @c remote of a client profile, a @c <connection> block's included;
+ * empty when the backend would record none. */
+QString displayRemote(const QString &profile);
+
+/** Stores @p profile as a public data item and clears the secret layout.
+ * Only ever for a connection that already uses it; see the editor. */
 void writeLegacyProfile(NMStringMap &data, NMStringMap &secrets, const QString &profile);
 
 /**
- * Stores @p profile as the connection's @c profile secret with @p flags and
- * removes the public copy.
+ * Stores @p profile as the connection's @c profile secret with @p flags,
+ * removes the public copy and the older marker, and records the first remote
+ * the way the backend does.
  *
  * @p flags must be @c AgentOwned (wallet) or @c None (system). Anything else
  * is a programming error and leaves the maps untouched. A new profile goes

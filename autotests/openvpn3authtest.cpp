@@ -85,11 +85,43 @@ private Q_SLOTS:
     }
     void nestedEncryptedMaterialAsksForPassphrase()
     {
+        // The backend's service looks for key material anywhere in the
+        // profile (pki.py) and needs its passphrase, so the prompt asks.
         for (const QString &material : {u"<key>\n-----BEGIN ENCRYPTED PRIVATE KEY-----\nAAAA\n</key>\n"_s,
                                         u"<pkcs12>\nAAAA\n</pkcs12>\n"_s}) {
             OpenVpn3AuthWidget widget(secretSetting(u"client\n<connection>\nremote example.org\n"_s + material + u"</connection>\n"_s), {});
             QCOMPARE(keys(&widget), QStringList{u"cert-pass"_s});
         }
+    }
+    void anUnreadableLayoutIsNotAnswered_data()
+    {
+        QTest::addColumn<NMStringMap>("data");
+        QTest::addColumn<QStringList>("hints");
+        for (const QStringList &hints : {QStringList(), QStringList{u"password"_s}, QStringList{u"challenge-response"_s}}) {
+            const QString h = hints.join(u',');
+            QTest::addRow("unknown marker [%s]", qPrintable(h)) << NMStringMap{{u"profile-storage"_s, u"unknown"_s}, {u"profile-flags"_s, u"1"_s}} << hints;
+            QTest::addRow("flags 2 [%s]", qPrintable(h)) << NMStringMap{{u"profile-flags"_s, u"2"_s}} << hints;
+            QTest::addRow("flags x [%s]", qPrintable(h)) << NMStringMap{{u"profile-storage"_s, u"secret"_s}, {u"profile-flags"_s, u"x"_s}} << hints;
+        }
+    }
+    void anUnreadableLayoutIsNotAnswered()
+    {
+        // plasma-nm's password dialog takes whatever setting() returns,
+        // whatever isValid() says, so refusing has to happen there: a layout
+        // this version cannot vouch for gets no profile and no secrets back,
+        // even though the secret is sitting right there.
+        QFETCH(NMStringMap, data);
+        QFETCH(QStringList, hints);
+        auto setting = NetworkManager::VpnSetting::Ptr(new NetworkManager::VpnSetting);
+        setting->setServiceType(QLatin1String(NM_DBUS_SERVICE_OPENVPN3));
+        setting->setData(data);
+        setting->setSecrets({{u"profile"_s, encoded(kProfile)}, {u"password"_s, u"pw"_s}});
+        OpenVpn3AuthWidget widget(setting, hints);
+        for (PasswordField *field : fields(&widget)) {
+            field->setText(u"typed"_s);
+        }
+        QVERIFY(!widget.isValid());
+        QVERIFY(returnedSecrets(&widget).isEmpty());
     }
 
     void aChallengeHintAsksForAOneTimeCode();
@@ -113,7 +145,62 @@ private Q_SLOTS:
     void aHintedRetryKeepsTheSecretsItWasGiven();
     void theOneTimeCodeFieldIsWhereTheCursorIs();
     void aProfileAskingInsideAConnectionBlockStillAsksForAPassword();
+    void anUpstreamLayoutProfileIsReadAndHandedBack();
+    void anUpstreamLayoutProfileThatCouldNotBeReadIsExplained_data();
+    void anUpstreamLayoutProfileThatCouldNotBeReadIsExplained();
 };
+
+namespace
+{
+/** The backend's own layout: no marker, the flags say it is a secret. */
+NetworkManager::VpnSetting::Ptr upstreamSetting(const NMStringMap &data, const NMStringMap &secrets)
+{
+    auto setting = NetworkManager::VpnSetting::Ptr(new NetworkManager::VpnSetting);
+    setting->setServiceType(QLatin1String(NM_DBUS_SERVICE_OPENVPN3));
+    setting->setData(data);
+    setting->setSecrets(secrets);
+    return setting;
+}
+}
+
+void Openvpn3AuthTest::anUpstreamLayoutProfileIsReadAndHandedBack()
+{
+    const QString profile = u"# comment\nclient\nremote vpn.example.org\nauth-user-pass\n<key>\n-----BEGIN ENCRYPTED PRIVATE KEY-----\nA\n</key>\n"_s;
+    const NMStringMap data{{u"profile-flags"_s, u"1"_s}, {u"remote"_s, u"vpn.example.org"_s}, {u"password-flags"_s, u"1"_s}, {u"cert-pass-flags"_s, u"1"_s}};
+    OpenVpn3AuthWidget widget(upstreamSetting(data, {{u"profile"_s, encoded(profile)}, {u"challenge-response"_s, u"stale"_s}}), {});
+
+    // Read as the profile it is: the password and the passphrase asked for.
+    QCOMPARE(keys(&widget), QStringList({u"password"_s, u"cert-pass"_s}));
+    fields(&widget).first()->setText(u"pw"_s);
+    const NMStringMap secrets = returnedSecrets(&widget);
+    // The agent-owned profile goes back with the answer, the stale code not.
+    QCOMPARE(secrets.value(u"profile"_s), encoded(profile));
+    QCOMPARE(secrets.value(u"password"_s), u"pw"_s);
+    QVERIFY(!secrets.contains(u"challenge-response"_s));
+}
+
+void Openvpn3AuthTest::anUpstreamLayoutProfileThatCouldNotBeReadIsExplained_data()
+{
+    QTest::addColumn<NMStringMap>("data");
+    QTest::addColumn<QString>("expected");
+
+    const QString stale = encoded(u"client\nremote stale.example.org\nauth-user-pass\n"_s);
+    QTest::newRow("locked, stale public copy") << NMStringMap{{u"profile-flags"_s, u"1"_s}, {u"profile"_s, stale}} << u"wallet"_s;
+    QTest::newRow("flags 2") << NMStringMap{{u"profile-flags"_s, u"2"_s}} << u"never stored"_s;
+    QTest::newRow("flags not a number") << NMStringMap{{u"profile-flags"_s, u"x"_s}} << u"never stored"_s;
+}
+
+void Openvpn3AuthTest::anUpstreamLayoutProfileThatCouldNotBeReadIsExplained()
+{
+    QFETCH(NMStringMap, data);
+    QFETCH(QString, expected);
+    OpenVpn3AuthWidget widget(upstreamSetting(data, {}), {});
+
+    // No password box: the missing thing is the profile, and a stale copy is
+    // never the answer.
+    QVERIFY(fields(&widget).isEmpty());
+    QVERIFY2(labels(&widget).join(u' ').contains(expected), qPrintable(labels(&widget).join(u' ')));
+}
 
 void Openvpn3AuthTest::aChallengeHintAsksForAOneTimeCode()
 {
@@ -335,8 +422,9 @@ void Openvpn3AuthTest::theOneTimeCodeFieldIsWhereTheCursorIs()
 
 void Openvpn3AuthTest::aProfileAskingInsideAConnectionBlockStillAsksForAPassword()
 {
-    // openvpn3 reads <connection> as options, so the password it asks for
-    // there is one the prompt has to offer.
+    // openvpn3 itself ignores it there, but the backend's service counts an
+    // auth-user-pass anywhere outside a payload (ovpn.needs_user_pass) and
+    // asks for the password, so the prompt has to offer one.
     const auto nested = QStringLiteral("client\n<connection>\nremote vpn.example.org 1194\nauth-user-pass\n</connection>\n");
     OpenVpn3AuthWidget widget(secretSetting(nested), {});
 

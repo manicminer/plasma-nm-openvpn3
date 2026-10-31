@@ -29,14 +29,16 @@ kept, which the top-level import never could.
 is what a host that could ask the question would look like. It is not applied
 by this build and is in no package here.
 
-### A connection with no `profile-flags` may open without its profile
+### A marker-only connection with no `profile-flags` may open without its profile
 
 A connection editor asks NetworkManager for the secrets a connection records
 that it keeps, and that record is the `*-flags` entries in its VPN data.
-Everything this module writes records `profile-flags`, so its own connections
-are never affected.
+Everything this module and the upstream backend write records `profile-flags`
+-- in the backend's format its presence is what makes the profile a secret --
+so their connections are never affected.
 
-A secret-mode connection written by something else may omit it. NetworkManager
+A connection in the older layout, `profile-storage=secret`, written by
+something else may omit it. NetworkManager
 reads an absent entry as system-owned and the profile is still there, but the
 editor may never be given it, which looks exactly like a locked wallet from
 inside the editor. It therefore fails closed — saving is blocked so the stored
@@ -118,57 +120,122 @@ asserts the contract, not the conversation.
 
 ## Profile parsing
 
-### A backslash inside single quotes follows OpenVPN 2, not openvpn3
+### Values are read the way openvpn3 reads them
 
-The two OpenVPN lexers disagree about one thing, and there is no reading that
-satisfies both. OpenVPN 2's `parse_line()` turns its escape handling off inside
-a single-quoted parameter (`STATE_READING_SQUOTED_PARM`), so a backslash there
-is a literal character and the apostrophe after it closes the quote. openvpn3's
-`StandardLex` lets the backslash escape that apostrophe and stays inside the
-quote. For `setenv a 'x\' # literal'` OpenVPN 2 reads the value `x\`, and
-openvpn3 reads `x' # literal`.
+openvpn3 is what reads the stored profile, so the table, the General page and
+every edit read a line with openvpn3's own lexer (`OptionList::LexComment`
+through `Split::by_space`, as of the openvpn3 sources this was checked
+against): a `#` or `;` outside quotes starts a comment anywhere, glued to a
+word too (`remote vpn.example.org#primary` is the host `vpn.example.org`); a
+backslash escapes the next character everywhere, inside single quotes
+included; and an escaped space still separates.
 
-This module reads it as OpenVPN 2 does. openvpn3 is what actually reads the
-stored profile, so where it matters is this:
+OpenVPN 2 reads some of those lines differently — for it `a#b` is a value and
+a backslash inside single quotes is literal. That does not change anything
+here:
 
-* **Reading such a line never damages it.** Comment detection treats a `#` or
-  `;` as a comment only where *both* lexers agree it is one, so nothing is cut
-  off a line like that, and an entry nobody edited is written back from its
-  original text, byte for byte.
-* **Editing such a line rewrites it as the table read it.** If you change
-  another argument on that line, the single-quoted value is re-rendered from
-  the OpenVPN 2 reading, and what openvpn3 sees afterwards changes.
+* **A line nobody edited is written back exactly as it was**, so its meaning
+  to either is untouched.
+* **Editing a line rewrites it from what openvpn3 read.** The other
+  arguments come back quoted where they need it, so openvpn3 reads the same
+  values from them; a comment glued to the line is kept, with a space in
+  front of it.
 
-A single-quoted argument containing a backslash is the whole of the exposure.
-Use double quotes, where the two lexers agree, if you need an escape.
+### Comments and blank lines are kept, and not shown in the table
 
-Everywhere else a backslash is an escape, as both lexers have it: outside
-quotes and inside double quotes it takes the character after it, so an escaped
-space is part of the value in front of it rather than the end of it, including
-at the end of a line, where there is nothing after it to say so. A backslash
-with nothing after it at all escapes nothing and stays the character it is.
+The profile is one document, and the editor keeps all of it: comment lines,
+blank lines, a comment at the end of a directive, the formatting inside a
+`<connection>` block, CRLF line endings and a missing final newline. The
+**Profile Source** page shows the stored document exactly as it is stored —
+opening the page or switching tabs never reimports or rewrites it. (The text
+box itself has no carriage returns to show; a CRLF document stays CRLF.)
 
-### Formatting is not preserved
+The **Directives** table lists directives and blocks only; formatting has no
+row. It is still in the document, and the table's edits treat it this way:
 
-Comments and blank lines are discarded when a profile is read. openvpn3 reads
-nothing from them, and the profile stored inside a NetworkManager connection
-is not a file anybody opens in an editor again, so keeping them would only add
-rows to the directives table that nothing can act on. The backend's own
-importer does the same, so an imported profile arrives without them and a
-reimport changes nothing further.
+* **Editing** a directive rewrites that one line — its quoting and padding
+  become the editor's — and keeps the comment at its end, the lines in front
+  of it and its line ending. Nothing else changes.
+* **Adding** a directive puts it after the selected row, in front of the
+  comments of the row after it.
+* **Removing** a directive removes it. Comment and blank lines in front of
+  it stay in the document, in front of whatever follows, and a comment at the
+  end of its line stays as a comment line of its own where the line was.
+* **Moving** a directive takes the comment lines directly above it along;
+  a blank line, and anything above one, stays where it was. Reordering
+  servers on the General page does the same.
 
-What is *not* formatting is kept: the lines of an opaque `<ca>`, `<key>`,
-`<auth-user-pass>` or unknown `<tag>` payload are content and are untouched,
-blank lines and empty credentials included; a line of `U+00A0` or of `\v` is a
-value, not a blank line; and the whitespace a directive line is padded with
-belongs to that line.
+Comments are edited on the Profile Source page; the table has no button for
+them.
+
+Where a block ends is decided as openvpn3 decides it: a block opens on a
+line whose one word is a tag, quoted or padded, and closes only on a line
+that is exactly its closing tag. An indented closing tag, or one with a
+comment after it, is still payload, and nothing after it is read as a
+directive until the real one.
+
+An imported profile is what the backend's importer made of the file, which
+keeps comments and blank lines but strips each line's surrounding whitespace;
+see [backend.md](backend.md#what-the-import-does-to-a-profile-and-what-it-does-not).
+The editor promises the stored document, not the original file's bytes.
+
+### File references and the OpenVPN 3 backend
+
+openvpn3 is given the profile and nothing else, so a profile has to be
+self-contained when it is saved.
+
+* **Typed or edited references** at the top level — `ca`, `cert`, `key`,
+  `extra-certs`, `tls-auth`, `tls-crypt`, `tls-crypt-v2`, `crl-verify` with a
+  file, `pkcs12`, `auth-user-pass` with a file, an inline `<auth-user-pass>` —
+  are resolved through the backend's own importer when the page is left or
+  the connection saved. A stored profile that still has such entries —
+  written by something else — is shown as stored however often the pages
+  are visited, and is made self-contained only when it is saved. (Once
+  credentials are typed in, the stored credential sources are resolved with
+  them, in order, as the backend would.) Only those entries go through it, one at a time, and
+  what it makes of each is put in its place; the rest of the document is not
+  touched, so the importer's whitespace normalization never reaches lines
+  nobody edited. A comment on a replaced line is kept on a line of its own.
+* **A relative path is refused** with an explanation: a document held in the
+  editor has no folder it could be relative to. Use the full path, or import
+  the `.ovpn` file, whose own folder is used.
+* **A file that cannot be read** blocks saving, naming the path; nothing in
+  the document is changed meanwhile, and the file is looked for again each
+  time, so putting it in place is enough.
+* **Inside a `<connection>` block nothing is resolved**, neither by the
+  backend's importer nor by this editor, and nothing is moved out of the
+  block: openvpn3's `RemoteList` reads only `remote`, `proto` and `port` from
+  a block, so a `ca` or `auth-user-pass` there is something openvpn3 ignores,
+  not something to hoist. The editor shows a caveat naming each option
+  openvpn3 ignores and each file left unembedded, and saves the block as
+  written. An `auth-user-pass` or encrypted key inside a block is the one
+  exception that still counts: openvpn3 ignores it, but the backend's service
+  (`ovpn.needs_user_pass()`, `pki.py`) does not — it refuses to connect
+  without a username and asks for the password or passphrase — so the editor
+  asks for them too. The backend's C importer sets no `password-flags` for
+  such a profile; saving it here records them.
+* **openvpn3 refuses a `<connection>` block** whose size, as it counts it —
+  the text, comments included, plus 64 bytes per option and 16 per argument
+  — reaches 4096. The editor estimates that count and warns; the estimate
+  follows openvpn3's `OptionList::Limits` but is not openvpn3 itself.
+* **`crl-verify <dir> dir`** stays a directory reference. Whether openvpn3
+  uses a CRL directory at run time is not established here.
+* **Not embedded by the backend at all:** a legacy `http-proxy host port
+  authfile` credentials file (openvpn3 accepts inline `<http-proxy-user-pass>`
+  instead), and anything a `config` directive would include. Script, plugin,
+  `askpass` and `capath` references are not embedded either; openvpn3 does
+  not run those as OpenVPN 2 does.
 
 ### Exporting a profile is refused
 
 An OpenVPN 3 profile is self-contained: it has the private key and the
 certificates inlined in it, and when it is kept with the connection's secrets
-that is precisely so it never reaches a plain file. There is no export, rather
-than an export that quietly leaks one.
+that is precisely so it never reaches a plain file. There is no export from
+Plasma, rather than an export that quietly leaks one.
+
+The backend's own `nmcli connection export type openvpn3` does write the
+profile out, private key included, to a file it makes 0600. That is the
+backend's choice for its command-line path and does not change this one.
 
 ## What has not been shown
 
@@ -189,8 +256,15 @@ not reach, and it is worth saying which.
 * **The KCM's save error propagation is not covered end to end.** These tests
   drive the editor page and the host's connection editor, not the whole
   configuration module.
-* **The backend's own end-to-end evidence is not here.** See
-  [backend.md](backend.md).
+* **No live activation.** No run in this repository has brought up a
+  connection through a real NetworkManager and openvpn3. The backend's
+  conformance suite does take the connections this editor saves through the
+  backend's real service code against its fake openvpn3, and they connect
+  there; that is not a tunnel.
+* **Comment preservation is shown for this editor's documents, not for
+  every exotic profile.** The parser keeps every byte it does not change;
+  what a profile means where OpenVPN 2 and openvpn3 disagree is described
+  above.
 * **A separate real-KWallet probe, run elsewhere, did not pass cleanly.** It
   verified an 8,172-byte synthetic secret map through write, independent read
   and a daemon restart, and its cancellation checks *failed*: cancelling an
