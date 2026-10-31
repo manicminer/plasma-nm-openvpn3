@@ -107,7 +107,7 @@ bool recordsProfileFlags(const NMStringMap &data);
  * at all reads as 0, which is @c None, so the host asks -- this mirrors the
  * host rather than improving on it.
  *
- * Pinned to plasma-nm 6.8.1, like everything else about the host here. It is
+ * Pinned to plasma-nm 6.8.2, like everything else about the host here. It is
  * used to decide whether an unavailable profile can be explained by the
  * request never having been made, so being wrong about it would misdirect
  * rather than mislead the save path.

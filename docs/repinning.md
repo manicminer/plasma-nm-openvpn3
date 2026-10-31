@@ -110,9 +110,9 @@ this project vouches for.
 
 The range rests on an assumption this project does not verify and does not
 promise for future releases: that plasma-nm leaves the four private headers
-alone within a patch series. It held from 6.8.0 to 6.8.1, where the four
-headers and the whole `libs/` tree are byte-identical, and nothing more is
-known. Nothing can check it when the module is loaded, because the editor
+alone within a patch series. It held from 6.8.0 to 6.8.1 and again from 6.8.1
+to 6.8.2, where the four headers and the whole `libs/` tree are byte-identical,
+and nothing more is known. Nothing can check it when the module is loaded, because the editor
 library has no `SOVERSION` or ABI tag to compare against. So for each new
 patch release inside such a range, run the header diff in step 6 against it;
 an empty diff keeps the assumption true for that release, and anything else

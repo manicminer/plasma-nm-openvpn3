@@ -36,13 +36,13 @@ ship any part of plasma-nm.
 
 | | Supported |
 | --- | --- |
-| plasma-nm | **6.8.1 only** — see below, and [docs/repinning.md](docs/repinning.md) |
-| Verified distribution | Arch Linux, `plasma-nm 6.8.1-1`, x86_64 |
+| plasma-nm | **6.8.2 only** — see below, and [docs/repinning.md](docs/repinning.md) |
+| Verified distribution | Arch Linux, `plasma-nm 6.8.2-1`, x86_64 |
 | Qt / KF6 | 6.12.0 / 6.31.0 as verified; ≥ 6.11 / ≥ 6.30 required |
 | NetworkManager | `libnm` > 1.4 |
 | Backend | `network-manager-openvpn3` with pull request #1 ([docs/backend.md](docs/backend.md)) |
 
-Other distributions are expected to work where their plasma-nm is 6.8.1; none
+Other distributions are expected to work where their plasma-nm is 6.8.2; none
 has been verified, and the build refuses to configure against any other
 version, so a wrong one is a failed build rather than a crash later.
 A distribution package may still accept a wider runtime range as its own
@@ -63,10 +63,10 @@ the connection editor.
 This module deals with that by being pinned, verified and fail-closed:
 
 * The four headers it uses come from one immutable upstream revision,
-  `d0ea462a24de7a4ecdb411a964890e25860e17d9` — KDE's `v6.8.1` tag — recorded in
-  [`provenance/plasma-nm-6.8.1.pin`](provenance/plasma-nm-6.8.1.pin).
+  `ff1aba497ca7c3c33414795ded788daa98177687` — KDE's `v6.8.2` tag — recorded in
+  [`provenance/plasma-nm-6.8.2.pin`](provenance/plasma-nm-6.8.2.pin).
 * Their SHA-256 digests are committed in
-  [`provenance/plasma-nm-6.8.1.sha256`](provenance/plasma-nm-6.8.1.sha256) and
+  [`provenance/plasma-nm-6.8.2.sha256`](provenance/plasma-nm-6.8.2.sha256) and
   checked on every configure, whether the source tree was fetched or already
   present.
 * The build asks the distribution's package database which package owns the
@@ -92,7 +92,7 @@ cmake --build build
 ```
 
 `fetch-plasma-nm-source.sh` writes `./plasma-nm-source`, which is where the
-build looks without being told. If you already have a plasma-nm 6.8.1 checkout,
+build looks without being told. If you already have a plasma-nm 6.8.2 checkout,
 point at it instead and skip the network entirely:
 
 ```bash
