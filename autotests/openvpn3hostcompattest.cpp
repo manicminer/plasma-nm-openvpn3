@@ -79,7 +79,7 @@ NetworkManager::ConnectionSettings::Ptr vpnConnection(const QString &serviceType
  * reason it is possible to say what this module cannot do without guessing.
  *
  * Everything here is measured against the plasma-nm the module is pinned to;
- * see provenance/plasma-nm-6.8.1.pin.
+ * see provenance/plasma-nm-6.8.2.pin.
  */
 class Openvpn3HostCompatTest : public QObject
 {
@@ -197,7 +197,7 @@ void Openvpn3HostCompatTest::whatThisModuleWritesSatisfiesTheHostsSecretRequestP
  *
  * Measured against Openvpn3Storage::hostRequestsSecrets(), which is this
  * project's reimplementation of the host's predicate and is pinned to
- * plasma-nm 6.8.1 like the headers -- not against a live host. A real
+ * plasma-nm 6.8.2 like the headers -- not against a live host. A real
  * GetSecrets round trip needs a NetworkManager to make it to, and these are
  * component tests with no bus. So this asserts the contract, not the
  * conversation: if a future plasma-nm changed the predicate, this would keep
