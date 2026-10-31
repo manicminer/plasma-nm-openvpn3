@@ -17,6 +17,7 @@
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMap>
 #include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QPushButton>
@@ -56,10 +57,12 @@ constexpr int EntryIdRole = Qt::UserRole + 2;
 
 // A credential source replaces the old pair even when its password is empty.
 // Normalizing unrelated certificate files must leave the existing pair alone.
+// Only the top level: a source inside a <connection> scope is not lifted out
+// by the backend, so it replaces nothing.
 bool hasCredentialSource(const Openvpn3Profile &profile)
 {
-    for (const auto &entry : profile.optionsNamed(QStringLiteral("auth-user-pass"))) {
-        if (entry.isBlock() || !entry.arguments.isEmpty()) {
+    for (int index : profile.indexesOf(QStringLiteral("auth-user-pass"))) {
+        if (profile.needsNormalizationAt(index)) {
             return true;
         }
     }
@@ -586,9 +589,10 @@ void OpenVpn3SettingWidget::loadGeneralFromProfile()
     d->proto->setCurrentText(m_profile.value(QStringLiteral("proto")));
     d->device->setCurrentText(m_profile.value(QStringLiteral("dev")));
 
-    // What openvpn3 will do, which is not only what the top level says: a
-    // profile may ask for a username and password inside a <connection>
-    // block, and then it needs them just as much.
+    // What the backend's service will ask for, which is not only what the top
+    // level says: it counts an auth-user-pass inside a <connection> block
+    // too (ovpn.needs_user_pass), and refuses to connect without a username,
+    // even though openvpn3 itself ignores the line there.
     const bool userPass = m_profile.containsOption(QStringLiteral("auth-user-pass"));
     const bool elsewhere = userPass && !m_profile.contains(QStringLiteral("auth-user-pass"));
     d->authUserPass->setChecked(userPass);
@@ -702,16 +706,11 @@ void OpenVpn3SettingWidget::applyRemotes()
     // Rows the user moved: the remotes change places with each other, in the
     // places they already occupy. Nothing else in the document moves, and no
     // remote crosses a directive that was between them.
+    // The comments directly above a remote go with it; blank lines and what
+    // is in front of them stay where they are -- see Openvpn3Profile::reorder().
     const QList<int> places = m_profile.indexesOf(QStringLiteral("remote"));
     if (places.size() == rows) {
-        QList<Openvpn3Entry> inRowOrder;
-        inRowOrder.reserve(rows);
-        for (int row = 0; row < rows; ++row) {
-            inRowOrder.append(m_profile.at(m_profile.indexOfId(wanted.at(row))));
-        }
-        for (int i = 0; i < rows; ++i) {
-            m_profile.replace(places.at(i), inRowOrder.at(i));
-        }
+        m_profile.reorder(places, wanted);
     }
 
     onProfileEdited();
@@ -896,6 +895,7 @@ void OpenVpn3SettingWidget::loadConfig(const NetworkManager::Setting::Ptr &setti
 
     m_availability = Openvpn3Storage::availability(m_data, m_secrets);
     setProfile(Openvpn3Profile::fromText(Openvpn3Storage::readProfile(m_data, m_secrets)));
+    rememberLoadedReferences();
 
     const bool wasUpdating = m_updating;
     m_updating = true;
@@ -938,6 +938,7 @@ void OpenVpn3SettingWidget::loadSecrets(const NetworkManager::Setting::Ptr &sett
     if (availability == Openvpn3Storage::Availability::Available && !m_profileEdited) {
         m_availability = availability;
         setProfile(Openvpn3Profile::fromText(Openvpn3Storage::readProfile(m_data, m_secrets)));
+        rememberLoadedReferences();
     } else if (availability == Openvpn3Storage::Availability::Available) {
         m_availability = availability;
     }
@@ -1024,13 +1025,13 @@ Openvpn3Policy OpenVpn3SettingWidget::chosenPolicy() const
     return policy;
 }
 
-const Openvpn3Import &OpenVpn3SettingWidget::normalized(const QString &text) const
+Openvpn3Import OpenVpn3SettingWidget::normalized(const Openvpn3Profile &profile) const
 {
-    if (m_normalized.of != text) {
-        m_normalized.of = text;
-        m_normalized.result = Openvpn3Importer::normalize(text);
-    }
-    return m_normalized.result;
+    // Not cached: the files a reference names can appear, change or vanish
+    // while the text stays the same, and what is saved has to be what they
+    // hold at the time. Only a document that still points outside itself
+    // gets here at all.
+    return Openvpn3Importer::resolveReferences(profile);
 }
 
 QVariantMap OpenVpn3SettingWidget::setting() const
@@ -1053,9 +1054,14 @@ QVariantMap OpenVpn3SettingWidget::setting() const
     if (!blocked && profile.needsNormalization()) {
         // The profile points at a file, or carries credentials in the
         // document. openvpn3 gets a profile and nothing else, so the backend
-        // makes it self-contained -- the same code an import goes through,
-        // rather than a second opinion that would drift from it.
-        const Openvpn3Import &result = normalized(profile.toText());
+        // makes those entries self-contained -- the same code an import goes
+        // through, rather than a second opinion that would drift from it --
+        // and nothing else in the document is touched.
+        const Openvpn3Import result = normalized(profile);
+        if (!result.isValid()) {
+            // Read again just now and failed: the connection is not changed.
+            return vpnSettingOf(data, secrets);
+        }
         const bool replacesCredentials = hasCredentialSource(profile);
         profile = Openvpn3Profile::fromText(result.profile());
         // Credentials the user wrote into the document are the newest thing
@@ -1199,7 +1205,7 @@ QString OpenVpn3SettingWidget::blockingProblem() const
     if (profile.needsNormalization()) {
         // Everything it points at has to be readable from here, now, because
         // what gets stored is one self-contained profile.
-        const Openvpn3Import &result = normalized(profile.toText());
+        const Openvpn3Import result = normalized(profile);
         if (!result.isValid()) {
             return i18n("The profile cannot be made self-contained: %1", result.errorMessage());
         }
@@ -1272,12 +1278,57 @@ QString OpenVpn3SettingWidget::refreshedStatusText(Openvpn3Storage::Availability
     return QString();
 }
 
+QString OpenVpn3SettingWidget::connectionCaveatText(const Openvpn3Profile &profile)
+{
+    // Nothing here changes the document: a scope means what it says to
+    // OpenVPN 2, and the backend keeps it as written. What openvpn3 will make
+    // of it is still worth knowing before relying on it.
+    QStringList sentences;
+    QMap<int, QStringList> ignored;
+    for (const Openvpn3Profile::ConnectionCaveat &caveat : profile.connectionCaveats()) {
+        switch (caveat.kind) {
+        case Openvpn3Profile::ConnectionCaveat::IgnoredOption:
+            ignored[caveat.block].append(caveat.name);
+            break;
+        case Openvpn3Profile::ConnectionCaveat::FileReference:
+            ignored[caveat.block].append(caveat.name);
+            sentences.append(i18n("<interface>%1 %2</interface> in <interface>connection</interface> block %3 is not embedded in the profile: "
+                                  "the OpenVPN 3 backend inlines files only outside those blocks.",
+                                  caveat.name,
+                                  caveat.detail,
+                                  caveat.block));
+            break;
+        case Openvpn3Profile::ConnectionCaveat::TooLarge:
+            sentences.append(i18n("<interface>connection</interface> block %1 is larger than openvpn3 accepts for one (about %2 of %3 bytes as it "
+                                  "counts them), so the connection will not start until it is made smaller.",
+                                  caveat.block,
+                                  caveat.detail,
+                                  Openvpn3Profile::kMaxConnectionBlockCost));
+            break;
+        }
+    }
+    for (auto it = ignored.cbegin(); it != ignored.cend(); ++it) {
+        sentences.prepend(i18n("openvpn3 reads only <interface>remote</interface>, <interface>proto</interface> and <interface>port</interface> "
+                               "inside a <interface>connection</interface> block, so it ignores <interface>%1</interface> in block %2.",
+                               it.value().join(QLatin1String(", ")),
+                               it.key()));
+    }
+    return sentences.join(QLatin1Char(' '));
+}
+
 void OpenVpn3SettingWidget::refreshStatus()
 {
     // Why Save is unavailable, when it is: a disabled button with no reason
     // next to it is the same as no button. Otherwise, where the profile is.
     const QString problem = blockingProblem();
-    d->status->setText(problem.isEmpty() ? refreshedStatusText(m_availability, m_data) : problem);
+    QString text = problem.isEmpty() ? refreshedStatusText(m_availability, m_data) : problem;
+    if (!storedProfileIsUnreadable()) {
+        const QString caveats = connectionCaveatText(currentProfile());
+        if (!caveats.isEmpty()) {
+            text += QLatin1Char(' ') + caveats;
+        }
+    }
+    d->status->setText(text);
 
     const bool editable = !storedProfileIsUnreadable();
     d->tabs->setEnabled(editable);
@@ -1304,14 +1355,44 @@ void OpenVpn3SettingWidget::onTabChanged(int index)
     refreshStatus();
 }
 
+void OpenVpn3SettingWidget::rememberLoadedReferences()
+{
+    m_loadedReferences.clear();
+    for (int i = 0; i < m_profile.count(); ++i) {
+        if (m_profile.needsNormalizationAt(i)) {
+            m_loadedReferences.insert(m_profile.sourceAt(i));
+        }
+    }
+}
+
 void OpenVpn3SettingWidget::takeCredentialsFromProfile()
 {
-    if (!m_profile.needsNormalization()) {
+    // Only what was typed or edited since the profile was loaded: a stored
+    // profile that still points outside itself is shown as it is stored, and
+    // is only made self-contained when it is saved.
+    bool typed = false;
+    bool typedCredentials = false;
+    for (int i = 0; i < m_profile.count(); ++i) {
+        if (m_profile.needsNormalizationAt(i) && !m_loadedReferences.contains(m_profile.sourceAt(i))) {
+            typed = true;
+            typedCredentials = typedCredentials || m_profile.at(i).name == QLatin1String("auth-user-pass");
+        }
+    }
+    if (!typed) {
         return;
+    }
+    // Credentials typed in are only right in the order the backend takes all
+    // the sources in, so then the loaded sources are resolved with them, as
+    // a save would; loaded file references are still left alone.
+    QSet<QString> leave = m_loadedReferences;
+    if (typedCredentials) {
+        for (int index : m_profile.indexesOf(QStringLiteral("auth-user-pass"))) {
+            leave.remove(m_profile.sourceAt(index));
+        }
     }
     // onTabChanged has already selected the incoming view. Only m_profile
     // holds the outgoing document at this point.
-    const Openvpn3Import &result = normalized(m_profile.toText());
+    const Openvpn3Import result = Openvpn3Importer::resolveReferences(m_profile, leave);
     if (!result.isValid()) {
         return; // refreshStatus() says why; nothing is thrown away meanwhile
     }
@@ -1320,7 +1401,7 @@ void OpenVpn3SettingWidget::takeCredentialsFromProfile()
     // user can see that they are no longer in the profile.
     const bool wasUpdating = m_updating;
     m_updating = true;
-    if (hasCredentialSource(m_profile)) {
+    if (typedCredentials) {
         d->username->setText(result.username());
         d->password->setText(result.password());
         // Counted as an edit, even when it is empty. The password came out of
@@ -1333,9 +1414,10 @@ void OpenVpn3SettingWidget::takeCredentialsFromProfile()
         // profile too.
         m_editedSecretValues.insert(QLatin1String(NM_OPENVPN3_KEY_PASSWORD));
     }
-    // Consume successful normalization when handing the source back to the
+    // Consume successful resolution when handing the source back to the
     // other views. Later field edits must not be overwritten by credentials
-    // still embedded in an older copy of the source.
+    // still embedded in an older copy of the source. Only the entries that
+    // were resolved changed; the rest of the document is as it was.
     m_profile = Openvpn3Profile::fromText(result.profile());
     m_updating = wasUpdating;
 }
@@ -1441,6 +1523,7 @@ bool OpenVpn3SettingWidget::importProfile(const QString &fileName, QString *erro
     m_secrets = secrets;
     m_availability = Openvpn3Storage::availability(m_data, m_secrets);
     setProfile(Openvpn3Profile::fromText(import.profile()));
+    rememberLoadedReferences();
 
     const bool wasUpdating = m_updating;
     m_updating = true;

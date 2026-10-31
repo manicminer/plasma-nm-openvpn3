@@ -56,8 +56,9 @@ jobs:
   build:
     uses: ./.github/workflows/build.yml
     with:
-      # Repository variables, so the backend this is tested against can be
-      # changed without editing a workflow. Unset means the importer tests
-      # skip, and the job summary says so.
-      backend-repository: ${{ vars.BACKEND_REPOSITORY }}
-      backend-ref: ${{ vars.BACKEND_REF }}
+      # The upstream backend at the immutable revision this module was tested
+      # against (0.2.0 plus its test-layout follow-up), not a moving branch
+      # and not a repository variable: what CI exercises is part of the
+      # commit. docs/backend.md says what moving it involves.
+      backend-repository: AlexeySetevoi/network-manager-openvpn3
+      backend-ref: 6f9dd3d527ff3e3ae5a6098df1be675f93ce34c5

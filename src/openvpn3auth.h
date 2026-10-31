@@ -44,8 +44,13 @@ public:
     ~OpenVpn3AuthWidget() override;
 
     QVariantMap setting() const override;
+    /** False for a connection whose storage layout cannot be vouched for;
+     * setting() then hands back nothing. */
+    bool isValid() const override;
 
 private:
+    //! The connection names an unknown layout, or flags no profile is kept with.
+    bool layoutIsUnreadable() const;
     void readSecrets();
     void addField(const QString &label, const QString &key, const QString &value, bool echo);
     //! An explanation where a field would be: a row with nothing to type in.

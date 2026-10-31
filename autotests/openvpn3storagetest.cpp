@@ -45,6 +45,13 @@ class Openvpn3StorageTest : public QObject
 private Q_SLOTS:
     void readsALegacyProfile();
     void readsASecretProfile();
+    void readsTheUpstreamSecretLayout();
+    void flagsAloneMakeTheSecretLayout();
+    void emptyFlagsAreNotAbsentFlags();
+    void unknownStorageMarkerFailsClosedEvenWithFlags();
+    void writesNoStorageMarker();
+    void writesTheFirstRemoteForDisplay();
+    void writesNoRemoteForAProfileTheBackendWouldNotRead();
     void neverReadsAStalePublicCopyInSecretMode();
     void reportsWhyAProfileIsMissing();
     void reportsACorruptProfile();
@@ -83,6 +90,92 @@ void Openvpn3StorageTest::readsASecretProfile()
     QCOMPARE(Openvpn3Storage::availability(data, secrets), Openvpn3Storage::Availability::Available);
     QCOMPARE(Openvpn3Storage::readProfile(data, secrets), kProfile);
     QCOMPARE(Openvpn3Storage::profileFlags(data), std::optional<Flags>(NetworkManager::Setting::AgentOwned));
+}
+
+void Openvpn3StorageTest::readsTheUpstreamSecretLayout()
+{
+    // What network-manager-openvpn3 0.2.0 and later writes: no marker, the
+    // presence of profile-flags is what says the profile is a secret.
+    const NMStringMap data{{u"profile-flags"_s, u"0"_s}, {u"remote"_s, u"vpn.example.net"_s}};
+    const NMStringMap secrets{{u"profile"_s, encoded(kProfile)}};
+
+    QVERIFY(Openvpn3Storage::isSecretMode(data));
+    QVERIFY(Openvpn3Storage::recordsProfileFlags(data));
+    QCOMPARE(Openvpn3Storage::availability(data, secrets), Openvpn3Storage::Availability::Available);
+    QCOMPARE(Openvpn3Storage::readProfile(data, secrets), kProfile);
+    QCOMPARE(Openvpn3Storage::profileFlags(data), std::optional<Flags>(NetworkManager::Setting::None));
+}
+
+void Openvpn3StorageTest::flagsAloneMakeTheSecretLayout()
+{
+    // A data copy next to the flags is stale, exactly as the backend reads it.
+    const NMStringMap data{{u"profile-flags"_s, u"1"_s}, {u"profile"_s, encoded(QStringLiteral("client\nremote stale.example.net\n"))}};
+
+    QVERIFY(Openvpn3Storage::isSecretMode(data));
+    QCOMPARE(Openvpn3Storage::availability(data, {}), Openvpn3Storage::Availability::Locked);
+    QVERIFY(Openvpn3Storage::readProfile(data, {}).isEmpty());
+}
+
+void Openvpn3StorageTest::emptyFlagsAreNotAbsentFlags()
+{
+    // Present but empty is not a number, which the backend refuses; only a
+    // missing entry under the older marker means system-owned.
+    for (const NMStringMap &data : {NMStringMap{{u"profile-flags"_s, QString()}},
+                                    NMStringMap{{u"profile-storage"_s, u"secret"_s}, {u"profile-flags"_s, QString()}}}) {
+        const NMStringMap secrets{{u"profile"_s, encoded(kProfile)}};
+        QCOMPARE(Openvpn3Storage::profileFlags(data), std::nullopt);
+        QCOMPARE(Openvpn3Storage::availability(data, secrets), Openvpn3Storage::Availability::UnusableFlags);
+    }
+}
+
+void Openvpn3StorageTest::unknownStorageMarkerFailsClosedEvenWithFlags()
+{
+    const NMStringMap data{{u"profile-storage"_s, u"v2-whatever"_s}, {u"profile-flags"_s, u"0"_s}};
+    const NMStringMap secrets{{u"profile"_s, encoded(kProfile)}};
+
+    QCOMPARE(Openvpn3Storage::availability(data, secrets), Openvpn3Storage::Availability::Unsupported);
+    QVERIFY(Openvpn3Storage::readProfile(data, secrets).isEmpty());
+}
+
+void Openvpn3StorageTest::writesNoStorageMarker()
+{
+    // A connection in the older marker layout is rewritten in the upstream
+    // one: the marker and the stale public copy go, the flags stay.
+    NMStringMap data{{u"profile-storage"_s, u"secret"_s}, {u"profile"_s, u"stale"_s}, {u"x-other"_s, u"keep"_s}};
+    NMStringMap secrets{{u"profile"_s, encoded(kProfile)}};
+
+    QVERIFY(Openvpn3Storage::writeSecretProfile(data, secrets, kProfile, NetworkManager::Setting::None));
+
+    QVERIFY(!data.contains(u"profile-storage"_s));
+    QVERIFY(!data.contains(u"profile"_s));
+    QCOMPARE(data.value(u"profile-flags"_s), u"0"_s);
+    QCOMPARE(data.value(u"x-other"_s), u"keep"_s);
+}
+
+void Openvpn3StorageTest::writesTheFirstRemoteForDisplay()
+{
+    // In document order, a <connection> block's included, as the backend
+    // reads it.
+    NMStringMap data{{u"remote"_s, u"old.example.net"_s}};
+    NMStringMap secrets;
+    const QString profile = u"client\n# remote commented.example.net\n<connection>\nremote first.example.net 1194 udp\n</connection>\nremote second.example.net\n"_s;
+
+    QVERIFY(Openvpn3Storage::writeSecretProfile(data, secrets, profile, NetworkManager::Setting::AgentOwned));
+    QCOMPARE(data.value(u"remote"_s), u"first.example.net"_s);
+
+    Openvpn3Storage::writeLegacyProfile(data, secrets, profile);
+    QCOMPARE(data.value(u"remote"_s), u"first.example.net"_s);
+}
+
+void Openvpn3StorageTest::writesNoRemoteForAProfileTheBackendWouldNotRead()
+{
+    // The backend only names a remote for a client profile; a stale one from
+    // an earlier save would be worse than none.
+    NMStringMap data{{u"remote"_s, u"old.example.net"_s}};
+    NMStringMap secrets;
+
+    QVERIFY(Openvpn3Storage::writeSecretProfile(data, secrets, u"remote vpn.example.net\n"_s, NetworkManager::Setting::AgentOwned));
+    QVERIFY(!data.contains(u"remote"_s));
 }
 
 void Openvpn3StorageTest::neverReadsAStalePublicCopyInSecretMode()
@@ -137,8 +230,9 @@ void Openvpn3StorageTest::writesTheWalletLayout()
 
     QVERIFY(Openvpn3Storage::writeSecretProfile(data, secrets, kProfile, NetworkManager::Setting::AgentOwned));
 
-    QCOMPARE(data,
-             (NMStringMap{{u"profile-storage"_s, u"secret"_s}, {u"profile-flags"_s, u"1"_s}}));
+    // The upstream layout: the flags are the marker, and the first remote is
+    // there for display. Nothing else.
+    QCOMPARE(data, (NMStringMap{{u"profile-flags"_s, u"1"_s}, {u"remote"_s, u"vpn.example.net"_s}}));
     QCOMPARE(secrets.value(u"profile"_s), encoded(kProfile));
     QCOMPARE(Openvpn3Storage::readProfile(data, secrets), kProfile);
     QCOMPARE(Openvpn3Storage::profileFlags(data), std::optional<Flags>(NetworkManager::Setting::AgentOwned));
@@ -229,19 +323,27 @@ void Openvpn3StorageTest::absentFlagsMeanSystemStorage()
 void Openvpn3StorageTest::refusesToReadFlagsThatWouldNotStoreTheProfile_data()
 {
     QTest::addColumn<QString>("flags");
+    QTest::addColumn<bool>("marker");
 
-    QTest::newRow("not saved") << u"2"_s;
-    QTest::newRow("not required") << u"4"_s;
-    QTest::newRow("combination") << u"3"_s;
-    QTest::newRow("out of range") << u"8"_s;
-    QTest::newRow("negative") << u"-1"_s;
-    QTest::newRow("not a number") << u"nonsense"_s;
+    for (const bool marker : {false, true}) {
+        const char *layout = marker ? "marker" : "upstream";
+        QTest::addRow("%s, not saved", layout) << u"2"_s << marker;
+        QTest::addRow("%s, not required", layout) << u"4"_s << marker;
+        QTest::addRow("%s, combination", layout) << u"3"_s << marker;
+        QTest::addRow("%s, out of range", layout) << u"8"_s << marker;
+        QTest::addRow("%s, negative", layout) << u"-1"_s << marker;
+        QTest::addRow("%s, not a number", layout) << u"nonsense"_s << marker;
+    }
 }
 
 void Openvpn3StorageTest::refusesToReadFlagsThatWouldNotStoreTheProfile()
 {
     QFETCH(QString, flags);
-    const NMStringMap data{{u"profile-storage"_s, u"secret"_s}, {u"profile-flags"_s, flags}};
+    QFETCH(bool, marker);
+    NMStringMap data{{u"profile-flags"_s, flags}};
+    if (marker) {
+        data.insert(u"profile-storage"_s, u"secret"_s);
+    }
     const NMStringMap secrets{{u"profile"_s, encoded(kProfile)}};
 
     // The secret is there, but the connection says it is never stored. That
@@ -277,7 +379,7 @@ void Openvpn3StorageTest::emptyStorageMarkerIsTheLegacyLayout()
 
 void Openvpn3StorageTest::clearRemovesEveryTrace()
 {
-    NMStringMap data{{u"profile-storage"_s, u"secret"_s}, {u"profile-flags"_s, u"1"_s}, {u"profile"_s, u"stale"_s}};
+    NMStringMap data{{u"profile-storage"_s, u"secret"_s}, {u"profile-flags"_s, u"1"_s}, {u"profile"_s, u"stale"_s}, {u"remote"_s, u"vpn.example.net"_s}};
     NMStringMap secrets{{u"profile"_s, encoded(kProfile)}};
 
     Openvpn3Storage::clearProfile(data, secrets);

@@ -23,11 +23,12 @@ class QTableWidget;
  * in the box underneath the table. Order is meaningful to OpenVPN, so rows can
  * be moved, and nothing is merged or sorted behind the user.
  *
- * Formatting is not among it. Openvpn3Profile drops the comments and the blank
- * lines when it reads a profile, so there is nothing to show a row for and no
- * point in a button that adds one: the next time the connection was loaded it
- * would be gone. Every row is therefore a directive or a block, and every row
- * has a name -- which is why one cannot be cleared.
+ * Formatting is not among it. Comments and blank lines are not rows: there is
+ * nothing in a row's columns they could fill. They are still in the document,
+ * carried by the entries -- see Openvpn3Profile -- so editing, adding,
+ * removing and moving rows keeps them, and the Profile Source page shows them
+ * where they are. Every row is a directive or a block, and every row has a
+ * name -- which is why one cannot be cleared.
  */
 class Openvpn3DirectivesWidget : public QWidget
 {

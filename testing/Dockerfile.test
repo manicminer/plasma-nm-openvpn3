@@ -11,8 +11,11 @@ ARG BASE_IMAGE=plasma-nm-openvpn3-build-env
 FROM ${BASE_IMAGE}
 
 # meson/python build the backend; fonts so rendered screenshots show text
-# rather than tofu.
-RUN pacman -Sy --noconfirm --needed meson python ttf-dejavu noto-fonts && pacman -Scc --noconfirm
+# rather than tofu; PyGObject, pytest and cryptography run the backend's
+# front-end conformance suite against this editor (run.sh conformance).
+RUN pacman -Sy --noconfirm --needed meson python ttf-dejavu noto-fonts \
+        python-gobject python-pytest python-cryptography \
+    && pacman -Scc --noconfirm
 
 # Bounded on purpose: an image build is not given a memory limit by BuildKit,
 # so the only thing that keeps this inside the same budget as the module build

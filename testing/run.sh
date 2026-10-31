@@ -21,8 +21,8 @@ HARNESS_REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 command=${1:-test}
 shift || true
 case "$command" in
-    images|source|build|test|screenshots|package|install-check) ;;
-    *) echo 'Usage: run.sh images|source|build|test|screenshots|package|install-check [arguments]' >&2; exit 2 ;;
+    images|source|build|test|conformance|screenshots|package|install-check) ;;
+    *) echo 'Usage: run.sh images|source|build|test|conformance|screenshots|package|install-check [arguments]' >&2; exit 2 ;;
 esac
 
 : "${BUILD_ROOT:?Set BUILD_ROOT to a dedicated scratch directory outside the checkout}"
@@ -127,7 +127,17 @@ case "$command" in
         ;;
     test)
         mkdir -p "$build_root/home"
-        contained -e QT_QPA_PLATFORM=offscreen -w /work/build "$image_test" \
+        # An image built with the backend records its revision. Then the tests
+        # that need the real importer must not skip: a skip there would mean
+        # the plugin did not load, which is a failure of this run, not a
+        # quieter version of it. An image without the backend says "none".
+        backend_revision=$(docker run --rm --network none --cap-drop ALL --security-opt no-new-privileges \
+            "$image_test" cat /backend-revision.txt 2>/dev/null || true)
+        require_backend=()
+        if [[ -n $backend_revision && $backend_revision != none ]]; then
+            require_backend=(-e OPENVPN3_REQUIRE_BACKEND=1)
+        fi
+        contained -e QT_QPA_PLATFORM=offscreen "${require_backend[@]}" -w /work/build "$image_test" \
             ctest --output-on-failure "$@"
         ;;
     package)
@@ -188,6 +198,34 @@ case "$command" in
             -v "$HARNESS_REPO:/src:ro" -v "$build_root:/work" \
             -w /work "$image_test" \
             /src/packaging/verify-install.sh "/work/package/$(basename "$artifact")" /work/release-build
+        ;;
+    conformance)
+        # The backend's own front-end conformance suite (its docs/frontends.md),
+        # run against this editor through openvpn3conformancedriver and the
+        # backend libnm plugin installed in the test image. BACKEND_ROOT is
+        # read only, and must be the checkout that image was built from.
+        : "${BACKEND_ROOT:?Set BACKEND_ROOT to the backend checkout the test image was built from}"
+        backend_root=$(require_existing_dir BACKEND_ROOT "$BACKEND_ROOT")
+        if [[ ! -x "$build_dir/bin/openvpn3conformancedriver" ]]; then
+            echo "No $build_dir/bin/openvpn3conformancedriver; run 'run.sh build' first" >&2
+            exit 2
+        fi
+        # With the storage the suite's core reference uses, everything but the
+        # editor's documented policy differences has to pass: those, and only
+        # those, are deselected. Any other storage choice runs everything and
+        # is for reading, not for gating.
+        storage=${OPENVPN3_DRIVER_STORAGE:-system}
+        deselect=()
+        if [[ $storage == system ]]; then
+            while IFS= read -r line; do
+                [[ -z $line || $line == \#* ]] || deselect+=(--deselect "$line")
+            done <"$HARNESS_REPO/testing/conformance-differences.txt"
+        fi
+        mkdir -p "$build_root/home"
+        contained -e QT_QPA_PLATFORM=offscreen -e PYTHONDONTWRITEBYTECODE=1 \
+            -e OPENVPN3_DRIVER_STORAGE="$storage" \
+            -v "$backend_root:/backend:ro" -w /backend/tests/conformance "$image_test" \
+            /backend/scripts/conformance /work/build/bin/openvpn3conformancedriver "${deselect[@]}" "$@"
         ;;
     screenshots)
         # Not a test: renders the editor's pages to PNGs for review.
