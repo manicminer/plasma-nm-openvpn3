@@ -7,6 +7,7 @@
 #ifndef PLASMA_NM_OPENVPN3_IMPORTER_H
 #define PLASMA_NM_OPENVPN3_IMPORTER_H
 
+#include <QSet>
 #include <QString>
 
 #include <NetworkManagerQt/GenericTypes>
@@ -96,8 +97,14 @@ struct Openvpn3Policy {
     NetworkManager::Setting::SecretFlags certPassFlags = NetworkManager::Setting::AgentOwned;
 };
 
+class Openvpn3Profile;
+
 namespace Openvpn3Importer
 {
+
+/** True when libnm finds the openvpn3 backend's editor plugin and it loads.
+ * Whether an import then succeeds is another question. */
+bool backendIsInstalled(QString *errorMessage = nullptr);
 
 /** Imports @p fileName through the openvpn3 backend's libnm plugin. */
 Openvpn3Import fromFile(const QString &fileName);
@@ -116,6 +123,34 @@ Openvpn3Import fromFile(const QString &fileName);
  * normalised -- a file it names cannot be read, say.
  */
 Openvpn3Import normalize(const QString &profileText);
+
+/**
+ * Makes @p profile self-contained the way an import would, touching nothing
+ * an import would not have to.
+ *
+ * Only the top-level entries that point outside the document -- the file
+ * references the backend inlines, a @c pkcs12 bundle, a credentials file or
+ * an inline @c <auth-user-pass> -- are put through the backend's importer,
+ * one at a time, and what it makes of each is put back in that entry's place.
+ * Every other byte of the document stays as it is: the import strips and
+ * re-terminates every line it reads, which is its contract for a file but
+ * not something to do to a document the user is editing. A comment on a
+ * replaced line is kept, on a line of its own above what replaced it.
+ *
+ * A @c <connection> scope is never looked into: the backend keeps those
+ * exactly as written and openvpn3 reads only the remote from them, so a file
+ * named in one stays a name. See Openvpn3Profile::connectionCaveats().
+ *
+ * A relative path is refused rather than resolved: a document held here has
+ * no directory it could be relative to.
+ *
+ * Entries whose source text is in @p leave are left as they are, so that a
+ * caller can resolve what was typed without touching what was loaded.
+ *
+ * @return the resolved profile text with any credentials it carried, or an
+ * invalid import naming what could not be resolved.
+ */
+Openvpn3Import resolveReferences(const Openvpn3Profile &profile, const QSet<QString> &leave = {});
 
 /**
  * Overwrites the first @p bytes of @p path with zeros, in place.

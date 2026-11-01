@@ -13,7 +13,7 @@ itself is mounted read only so a run cannot change the tree it is verifying.
 | Image | What it is |
 | --- | --- |
 | `plasma-nm-openvpn3-build-env` | `archlinux:latest`, the build dependencies, and the distribution's own **`plasma-nm` package**. Nothing here builds or replaces any part of plasma-nm. The image build fails if the distribution's `plasma-nm` is not the version the module is pinned to, so a rolling repository that has moved on is a loud early failure rather than a confusing one later. |
-| `plasma-nm-openvpn3-test-env` | The above plus the OpenVPN 3 backend's own libnm plugin and its `nm-openvpn3-service.name`, built from a read-only checkout of the backend. This is what makes the importer tests exercise the real importer instead of skipping, and it records the backend revision it was built from in `/backend-revision.txt`. |
+| `plasma-nm-openvpn3-test-env` | The above plus the OpenVPN 3 backend's own libnm plugin and its `nm-openvpn3-service.name`, built from a read-only checkout of the upstream backend, and the Python packages its conformance suite needs. This is what makes the importer tests exercise the real importer, and it records the backend revision it was built from in `/backend-revision.txt`. |
 
 Only the image build installs packages, and only it and `run.sh source` use the
 network at all.
@@ -22,13 +22,15 @@ network at all.
 
 ```bash
 export BUILD_ROOT=/path/to/scratch/openvpn3-build        # dedicated, outside the checkout
-export BACKEND_ROOT=/path/to/network-manager-openvpn3    # backend checkout, read only
+export BACKEND_ROOT=/path/to/network-manager-openvpn3    # upstream checkout, read only
+git -C "$BACKEND_ROOT" checkout 6f9dd3d527ff3e3ae5a6098df1be675f93ce34c5   # the tested revision
 
 testing/run.sh images        # only needed once, and the only step that installs packages
 testing/run.sh source        # fetch and verify the pinned plasma-nm headers
 testing/run.sh build
 testing/run.sh test
 testing/run.sh test -R openvpn3 -V
+testing/run.sh conformance   # the backend's front-end conformance suite
 testing/run.sh screenshots   # not a test: renders the editor's pages for review
 testing/run.sh package
 testing/run.sh install-check
@@ -67,6 +69,48 @@ defaults to `Debug`, `JOBS` to 2 and `MEMORY` to `8g`; containers run
 unprivileged, with `--cap-drop ALL`, `--security-opt no-new-privileges`, no
 swap beyond that memory limit and — for everything but `images` and `source` —
 `--network none`.
+
+## Skips mean the backend was not there
+
+Every test that needs the real libnm importer asks libnm whether the backend's
+plugin is installed — not whether an import succeeds, which would turn a real
+incompatibility into a skip. `run.sh test` reads `/backend-revision.txt` from
+the test image, and when the image was built with a backend it sets
+`OPENVPN3_REQUIRE_BACKEND=1`, under which such a test fails instead of
+skipping. A run against an image built without `BACKEND_ROOT` skips them and
+says so; that run is the backend-absent coverage, not evidence about the
+importer.
+
+## The backend's conformance suite
+
+`run.sh conformance` runs the upstream backend's own front-end conformance
+suite (`scripts/conformance`, its `docs/frontends.md`) from the read-only
+`BACKEND_ROOT`, against this editor through
+[`autotests/openvpn3conformancedriver.cpp`](../autotests/openvpn3conformancedriver.cpp).
+The driver uses the editor's own widgets: Import Profile… with the storage
+chosen on the page, its fields, and the secrets prompt. The suite compares
+what that saves with what the backend's own import produces, checks it
+against the connection format, edits the backend's fixture connections, and
+takes the saved connections through the backend's real service against its
+fake openvpn3.
+
+The editor's policy differs from the bare core's in a few places on purpose,
+so with `OPENVPN3_DRIVER_STORAGE=system` (the default for this command: the
+user chose storage for all users) the checks listed in
+[`testing/conformance-differences.txt`](../testing/conformance-differences.txt)
+are deselected, each with its reason, and everything else must pass:
+
+* a profile that asks for a username cannot be saved without one, so three
+  of the suite's profiles cannot be loaded as they are;
+* a password a profile carried is stored where the password field says,
+  the user's wallet by default, where the core keeps it system-owned;
+* a connection in the old public layout keeps it when saved unchanged;
+* the secrets prompt returns every secret the connection carries, because
+  plasma-nm's agent replaces the whole vpn setting with the answer.
+
+`OPENVPN3_DRIVER_STORAGE=agent` imports into the wallet, as the page does by
+default; every check runs, and the profile-storage checks then differ too.
+That run is for reading, not gating.
 
 ## The release artifacts, and what checks them
 

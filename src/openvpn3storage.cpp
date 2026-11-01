@@ -7,6 +7,7 @@
 #include "openvpn3storage.h"
 
 #include "nm-openvpn3-service.h"
+#include "openvpn3profile.h"
 
 #include <QByteArray>
 #include <QDBusConnection>
@@ -45,6 +46,39 @@ QString storageMarker(const NMStringMap &data)
     return data.value(QLatin1String(NM_OPENVPN3_KEY_PROFILE_STORAGE));
 }
 
+/**
+ * The remote the backend names a profile by, or an empty string.
+ *
+ * What openvpn3_profile_remote() in the backend's ovpn-import.c reads: the
+ * host of the first @c remote with one, a @c <connection> block's included,
+ * and only for a client profile -- for anything else the backend's parser
+ * gives up and records no remote at all.
+ */
+QString remoteOf(const QString &profileText)
+{
+    const Openvpn3Profile profile = Openvpn3Profile::fromText(profileText);
+    if (!profile.contains(QStringLiteral("client"))) {
+        return QString();
+    }
+    const QStringList hosts = profile.remoteHosts();
+    for (const QString &host : hosts) {
+        if (!host.isEmpty()) {
+            return host;
+        }
+    }
+    return QString();
+}
+
+void setDisplayRemote(NMStringMap &data, const QString &profileText)
+{
+    const QString remote = remoteOf(profileText);
+    if (remote.isEmpty()) {
+        data.remove(QLatin1String(NM_OPENVPN3_KEY_REMOTE));
+    } else {
+        data.insert(QLatin1String(NM_OPENVPN3_KEY_REMOTE), remote);
+    }
+}
+
 bool isUnsupportedLayout(const NMStringMap &data)
 {
     const QString marker = storageMarker(data);
@@ -64,9 +98,18 @@ QString storedProfile(const NMStringMap &data, const NMStringMap &secrets)
 
 }
 
+QString Openvpn3Storage::displayRemote(const QString &profile)
+{
+    return remoteOf(profile);
+}
+
 bool Openvpn3Storage::isSecretMode(const NMStringMap &data)
 {
-    return storageMarker(data) == QLatin1String(NM_OPENVPN3_PROFILE_STORAGE_SECRET);
+    // The backend's own discriminator is the presence of the flags; the
+    // marker is what the layout proposed before it, still read so that a
+    // connection saved by an earlier version of this editor keeps working.
+    return !isUnsupportedLayout(data)
+        && (data.contains(flagsKey()) || storageMarker(data) == QLatin1String(NM_OPENVPN3_PROFILE_STORAGE_SECRET));
 }
 
 Openvpn3Storage::Availability Openvpn3Storage::availability(const NMStringMap &data, const NMStringMap &secrets)
@@ -102,13 +145,16 @@ std::optional<NetworkManager::Setting::SecretFlags> Openvpn3Storage::profileFlag
     if (!isSecretMode(data)) {
         return NetworkManager::Setting::None;
     }
-    const QString value = data.value(flagsKey());
-    if (value.isEmpty()) {
-        // NetworkManager reads a secret without flags as None, system-owned.
-        // Guessing AgentOwned would move an unattended connection's profile
-        // into the user's wallet the next time anything saved it.
+    if (!data.contains(flagsKey())) {
+        // Only possible under the older marker. NetworkManager reads a secret
+        // without flags as None, system-owned; guessing AgentOwned would move
+        // an unattended connection's profile into the user's wallet the next
+        // time anything saved it.
         return NetworkManager::Setting::None;
     }
+    // Present is a promise of a number, as the backend reads it: an empty
+    // value is not one.
+    const QString value = data.value(flagsKey());
     bool ok = false;
     const int flags = value.toInt(&ok);
     if (!ok || (flags != NetworkManager::Setting::None && flags != NetworkManager::Setting::AgentOwned)) {
@@ -119,7 +165,7 @@ std::optional<NetworkManager::Setting::SecretFlags> Openvpn3Storage::profileFlag
 
 bool Openvpn3Storage::recordsProfileFlags(const NMStringMap &data)
 {
-    return isSecretMode(data) && data.contains(flagsKey());
+    return !isUnsupportedLayout(data) && data.contains(flagsKey());
 }
 
 bool Openvpn3Storage::hostRequestsSecrets(const NMStringMap &data)
@@ -145,6 +191,7 @@ void Openvpn3Storage::writeLegacyProfile(NMStringMap &data, NMStringMap &secrets
     data.remove(QLatin1String(NM_OPENVPN3_KEY_PROFILE_STORAGE));
     data.remove(flagsKey());
     data.insert(QLatin1String(NM_OPENVPN3_KEY_PROFILE), QString::fromLatin1(profile.toUtf8().toBase64()));
+    setDisplayRemote(data, profile);
 }
 
 bool Openvpn3Storage::writeSecretProfile(NMStringMap &data, NMStringMap &secrets, const QString &profile, NetworkManager::Setting::SecretFlags flags)
@@ -153,9 +200,12 @@ bool Openvpn3Storage::writeSecretProfile(NMStringMap &data, NMStringMap &secrets
         return false;
     }
     // No duplicate public copy: it would outlive the secret and be read stale.
+    // No marker either: the flags are the backend's marker, and the older one
+    // goes so that the connection is in exactly the layout the backend writes.
     data.remove(QLatin1String(NM_OPENVPN3_KEY_PROFILE));
-    data.insert(QLatin1String(NM_OPENVPN3_KEY_PROFILE_STORAGE), QLatin1String(NM_OPENVPN3_PROFILE_STORAGE_SECRET));
+    data.remove(QLatin1String(NM_OPENVPN3_KEY_PROFILE_STORAGE));
     data.insert(flagsKey(), QString::number(static_cast<int>(flags)));
+    setDisplayRemote(data, profile);
     secrets.insert(QLatin1String(NM_OPENVPN3_KEY_PROFILE), QString::fromLatin1(profile.toUtf8().toBase64()));
     return true;
 }
@@ -198,5 +248,6 @@ void Openvpn3Storage::clearProfile(NMStringMap &data, NMStringMap &secrets)
     data.remove(QLatin1String(NM_OPENVPN3_KEY_PROFILE));
     data.remove(QLatin1String(NM_OPENVPN3_KEY_PROFILE_STORAGE));
     data.remove(flagsKey());
+    data.remove(QLatin1String(NM_OPENVPN3_KEY_REMOTE));
     secrets.remove(QLatin1String(NM_OPENVPN3_KEY_PROFILE));
 }

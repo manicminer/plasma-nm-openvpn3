@@ -6,7 +6,9 @@ plasma-nm**.
 
 It edits `org.freedesktop.NetworkManager.openvpn3` connections: general fields,
 the full ordered directives table and a raw profile source view, all three
-views of one profile document. A profile carries its private key inlined, so
+views of one profile document. The source view shows the stored profile
+exactly as it is stored; the table shows its directives and blocks and keeps
+the comments and blank lines it does not show. A profile carries its private key inlined, so
 every new and every imported connection keeps it where only an agent or an
 explicit request can get at it: the user's wallet, or a NetworkManager
 system-owned secret. The older layout — the profile as a public connection data
@@ -20,9 +22,9 @@ importer, so what Plasma stores is what the backend will read.
 This repository contains the Plasma editor only. It does not modify, replace or
 ship any part of plasma-nm.
 
-> **Read [docs/backend.md](docs/backend.md) first.** This module needs a
-> NetworkManager OpenVPN 3 backend change that is **not upstream yet**; against
-> the released backend, connections it creates will not activate.
+> **It needs the upstream OpenVPN 3 backend, 0.2.0 or later** — see
+> [docs/backend.md](docs/backend.md). Against 0.1.0, connections it saves will
+> not activate.
 
 | | |
 | --- | --- |
@@ -40,7 +42,7 @@ ship any part of plasma-nm.
 | Verified distribution | Arch Linux, `plasma-nm 6.8.2-1`, x86_64 |
 | Qt / KF6 | 6.12.0 / 6.31.0 as verified; ≥ 6.11 / ≥ 6.30 required |
 | NetworkManager | `libnm` > 1.4 |
-| Backend | `network-manager-openvpn3` with pull request #1 ([docs/backend.md](docs/backend.md)) |
+| Backend | upstream `network-manager-openvpn3` ≥ 0.2.0; tested at `6f9dd3d527ff3e3ae5a6098df1be675f93ce34c5` ([docs/backend.md](docs/backend.md)) |
 
 Other distributions are expected to work where their plasma-nm is 6.8.2; none
 has been verified, and the build refuses to configure against any other
@@ -127,7 +129,12 @@ Add a VPN connection of type **OpenVPN 3**, then either write a profile on the
 **Profile Source** page or use **Import Profile…** on the editor page to read
 an existing `.ovpn` file.
 
-**Import Profile… is the way in.** This module deliberately does not appear in
+**Import Profile… is the way in.** It goes through the backend's own importer,
+which inlines the files the profile names at its top level and keeps its
+comments and blank lines; what it does not inline — anything inside a
+`<connection>` block, a CRL directory — is listed in
+[docs/backend.md](docs/backend.md#what-the-import-does-to-a-profile-and-what-it-does-not),
+and the editor says so when a profile has some. This module deliberately does not appear in
 the connection editor's own top-level *Import VPN connection*, because on a
 stock host that would mean sometimes stealing an OpenVPN 2 import; the reason
 is in [docs/limitations.md](docs/limitations.md). Importing from the editor
@@ -160,18 +167,20 @@ no network, no host bus, no host home directory and no real credentials:
 
 ```bash
 export BUILD_ROOT=/path/to/scratch/openvpn3-build        # dedicated, outside the checkout
-export BACKEND_ROOT=/path/to/network-manager-openvpn3    # backend checkout, read only
+export BACKEND_ROOT=/path/to/network-manager-openvpn3    # upstream checkout at the tested revision, read only
 testing/run.sh images        # once; the only step that installs packages
 testing/run.sh source
 testing/run.sh build
 testing/run.sh test
+testing/run.sh conformance   # the backend's own front-end conformance suite
 testing/run.sh package
 testing/run.sh install-check
 ```
 
-`BACKEND_ROOT` is optional and worth having: every assertion that needs the
-real libnm importer is guarded, so **a run with no skips is the evidence that
-the real importer was exercised**, and a run without the backend is not one.
+`BACKEND_ROOT` is optional and worth having: with it, the test image carries
+the real libnm importer and **an importer test that skips is a failure**;
+without it they skip, and that run is not evidence the importer was
+exercised.
 See [docs/verification.md](docs/verification.md) for what those containers are
 and are not allowed to do.
 

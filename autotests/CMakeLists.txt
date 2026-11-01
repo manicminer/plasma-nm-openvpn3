@@ -26,6 +26,12 @@ ecm_add_tests(
     LINK_LIBRARIES Qt::Test Qt::Widgets Qt::DBus KF6::CoreAddons plasmanetworkmanagement_openvpn3_core
 )
 
+# Not a test: the driver the backend's front-end conformance suite works this
+# editor through. See openvpn3conformancedriver.cpp and testing/run.sh
+# conformance.
+add_executable(openvpn3conformancedriver openvpn3conformancedriver.cpp)
+target_link_libraries(openvpn3conformancedriver Qt::Widgets Qt::DBus plasmanetworkmanagement_openvpn3_core)
+
 # Not a test: renders the editor for review. See openvpn3screenshot.cpp.
 add_executable(openvpn3screenshot openvpn3screenshot.cpp)
 target_link_libraries(openvpn3screenshot Qt::Widgets plasmanetworkmanagement_openvpn3_core)

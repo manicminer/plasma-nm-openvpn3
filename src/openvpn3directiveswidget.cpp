@@ -59,7 +59,9 @@ Openvpn3DirectivesWidget::Openvpn3DirectivesWidget(QWidget *parent)
 {
     auto layout = new QVBoxLayout(this);
 
-    auto explanation = new QLabel(i18n("Every line of the profile, in order. Entries Plasma does not understand are kept exactly as they are."), this);
+    auto explanation = new QLabel(i18n("Every directive and block of the profile, in order. Entries Plasma does not understand are kept exactly as they "
+                                       "are. Comments and blank lines are not listed here, and stay where they are; edit them on the Profile Source page."),
+                                  this);
     explanation->setWordWrap(true);
     layout->addWidget(explanation);
 
@@ -208,7 +210,9 @@ void Openvpn3DirectivesWidget::onCellChanged(int row, int column)
             }
             return;
         }
-        m_profile.replace(row, entry.isBlock() ? Openvpn3Profile::block(name, entry.body) : Openvpn3Profile::directive(name, entry.arguments));
+        // The same entry under another name: its comment and the formatting
+        // in front of it are still its own.
+        m_profile.rename(row, name);
     } else if (column == ArgumentsColumn && entry.isDirective()) {
         m_profile.setArguments(row, Openvpn3Profile::splitArguments(text));
     } else {

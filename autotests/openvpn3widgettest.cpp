@@ -25,6 +25,7 @@
 #include <NetworkManagerQt/VpnSetting>
 
 #include "nm-openvpn3-service.h"
+#include "openvpn3backendguard.h"
 #include "openvpn3importer.h"
 #include "openvpn3profile.h"
 #include "openvpn3storage.h"
@@ -54,9 +55,8 @@ const auto kProfile = QStringLiteral(
     "-----END CERTIFICATE-----\n"
     "</ca>\n");
 
-/** A connection written before the formatting was dropped, or a file that
- * still has it: comments and blank lines the editor has to cope with without
- * showing them. */
+/** A profile as the backend imports one: comments and blank lines the editor
+ * keeps without showing them as rows. */
 const auto kCommented = QStringLiteral(
     "##\n"
     "# Synthetic test profile\n"
@@ -76,9 +76,8 @@ const auto kCommented = QStringLiteral(
     "</ca>\n"
     "\n");
 
-/** kCommented once it has been through the editor: the comments and the blank
- * lines between directives are gone, the blank line inside the certificate is
- * payload and stays. */
+/** kCommented as openvpn3 reads it, Openvpn3Profile::optionsText(): what the
+ * rows of the table say. The stored document is still kCommented. */
 const auto kCommentedKept = QStringLiteral(
     "client\n"
     "remote vpn1.example.org 1194 udp\n"
@@ -118,10 +117,24 @@ NetworkManager::VpnSetting::Ptr legacySetting(const QString &profile = kProfile)
     return settingFrom({{u"profile"_s, encoded(profile)}, {u"username"_s, u"alice"_s}, {u"password-flags"_s, u"1"_s}});
 }
 
-/** A VPN setting whose profile is one of the connection's secrets. */
+/** A VPN setting whose profile is one of the connection's secrets, in the
+ * layout the proposal before the backend's 0.2.0 wrote: the explicit
+ * marker as well as the flags. Still read; see upstreamSetting(). */
 NetworkManager::VpnSetting::Ptr secretSetting(const QString &flags = u"1"_s, bool withSecret = true, const QString &profile = kProfile)
 {
     const NMStringMap data{{u"profile-storage"_s, u"secret"_s}, {u"profile-flags"_s, flags}, {u"username"_s, u"alice"_s}};
+    NMStringMap secrets;
+    if (withSecret) {
+        secrets.insert(u"profile"_s, encoded(profile));
+    }
+    return settingFrom(data, secrets);
+}
+
+/** A VPN setting in the backend's own layout (0.2.0 and later): the flags are
+ * the only marker, and the first remote is there for display. */
+NetworkManager::VpnSetting::Ptr upstreamSetting(const QString &flags = u"0"_s, bool withSecret = true, const QString &profile = kProfile)
+{
+    const NMStringMap data{{u"profile-flags"_s, flags}, {u"remote"_s, u"vpn1.example.org"_s}, {u"username"_s, u"alice"_s}, {u"x-other"_s, u"keep"_s}};
     NMStringMap secrets;
     if (withSecret) {
         secrets.insert(u"profile"_s, encoded(profile));
@@ -190,12 +203,6 @@ QString dataPath(const QString &name)
     return QString::fromLatin1(OPENVPN3_TEST_DATA_DIR) + QLatin1Char('/') + name;
 }
 
-/** True when the openvpn3 backend's libnm plugin is available to libnm. */
-bool backendAvailable()
-{
-    static const bool available = Openvpn3Importer::fromFile(dataPath(u"office.ovpn"_s)).isValid();
-    return available;
-}
 }
 
 /** The editor page: what it shows, what it stores, and what it refuses to do. */
@@ -265,9 +272,7 @@ private Q_SLOTS:
         // the rest of them where the backend is not installed rather than
         // failing. A run with no skips is what says the real importer was
         // exercised; a run that failed here would say nothing at all.
-        if (!backendAvailable()) {
-            QSKIP("the openvpn3 backend's libnm plugin is not installed");
-        }
+        OPENVPN3_REQUIRE_BACKEND();
         auto original = layout == 0 ? legacySetting() : secretSetting(u"0"_s, layout == 2);
         auto data = original->data();
         data[u"username"_s] = u"original-user"_s;
@@ -351,9 +356,7 @@ private Q_SLOTS:
 
     void explicitEmptyReplacementPasswordClearsOldSecret()
     {
-        if (!backendAvailable()) {
-            QSKIP("the openvpn3 backend's libnm plugin is not installed");
-        }
+        OPENVPN3_REQUIRE_BACKEND();
         for (int destination : {2, 0, 1}) {
             auto setting = secretSetting();
             auto secrets = setting->secrets();
@@ -371,9 +374,7 @@ private Q_SLOTS:
 
     void normalizationUsesTheOutgoingTab()
     {
-        if (!backendAvailable()) {
-            QSKIP("the openvpn3 backend's libnm plugin is not installed");
-        }
+        OPENVPN3_REQUIRE_BACKEND();
         for (int destination : {0, 1}) {
             OpenVpn3SettingWidget widget(secretSetting());
             tabs(&widget)->setCurrentIndex(2);
@@ -407,9 +408,7 @@ private Q_SLOTS:
     void credentialsLiftedOutOfTheProfileSurviveALateReply()
     {
         QFETCH(QString, stored);
-        if (!backendAvailable()) {
-            QSKIP("the openvpn3 backend's libnm plugin is not installed");
-        }
+        OPENVPN3_REQUIRE_BACKEND();
         OpenVpn3SettingWidget widget(secretSetting());
         tabs(&widget)->setCurrentIndex(2);
         sourceEdit(&widget)->setPlainText(u"client\nremote new.example.org\n<auth-user-pass>\nnew-user\nnew-password\n</auth-user-pass>\n"_s);
@@ -472,9 +471,7 @@ private Q_SLOTS:
 
     void normalizedPasswordCannotBypassUnavailableWallet()
     {
-        if (!backendAvailable()) {
-            QSKIP("the openvpn3 backend's libnm plugin is not installed");
-        }
+        OPENVPN3_REQUIRE_BACKEND();
         Openvpn3Storage::setSecretServiceAvailability(false);
         OpenVpn3SettingWidget widget(secretSetting(u"0"_s));
         auto password = widget.findChild<PasswordField *>(u"openvpn3_password"_s);
@@ -498,9 +495,7 @@ private Q_SLOTS:
 
     void typedFilesSurviveDeletionAndReload()
     {
-        if (!backendAvailable()) {
-            QSKIP("the openvpn3 backend's libnm plugin is not installed");
-        }
+        OPENVPN3_REQUIRE_BACKEND();
         QTemporaryDir dir;
         QVERIFY(dir.isValid());
         const QString path = dir.filePath(u"ca.pem"_s);
@@ -523,9 +518,7 @@ private Q_SLOTS:
 
     void normalizedCredentialsCanBeEditedAfterSwitchingTabs()
     {
-        if (!backendAvailable()) {
-            QSKIP("the openvpn3 backend's libnm plugin is not installed");
-        }
+        OPENVPN3_REQUIRE_BACKEND();
         OpenVpn3SettingWidget widget(secretSetting());
         tabs(&widget)->setCurrentIndex(2);
         sourceEdit(&widget)->setPlainText(u"client\nremote example.org\n<auth-user-pass>\nbob\nold-password\n</auth-user-pass>\n"_s);
@@ -598,7 +591,27 @@ private Q_SLOTS:
     void addingARemoteAppendsIt();
     void removingARemoteLeavesConnectionBlocksAlone();
     void sourceEditsAreTakenVerbatim();
-    void aCommentTypedIntoTheSourceIsDropped();
+    void aCommentTypedIntoTheSourceIsKept();
+    void theSourceShowsTheStoredDocumentVerbatim();
+    void visitingThePagesNeverRewritesTheDocument();
+    void tableAndFieldEditsKeepTheFormatting();
+    void aCrlfDocumentStaysCrlfThroughEdits();
+    void anUpstreamConnectionIsSavedInTheUpstreamLayout();
+    void aMarkerConnectionIsMovedToTheUpstreamLayout_data();
+    void aMarkerConnectionIsMovedToTheUpstreamLayout();
+    void staleOrUnknownLayoutsFailClosed_data();
+    void staleOrUnknownLayoutsFailClosed();
+    void lateSecretsCannotOverwriteAnEditedProfile();
+    void connectionBlockCaveatsAreShown();
+    void resolvingAReferenceTouchesOnlyThatEntry();
+    void aRelativePathIsExplained();
+    void editingAServerKeepsWhatOpenvpn3ReadsFromTheLine();
+    void aMissingFileThatAppearsIsPickedUpWithoutAnEdit();
+    void aChangedOrDeletedFileIsReadAgainOnSave();
+    void textInsideAnOpaqueBlockIsNeverResolved();
+    void visitingThePagesNeverResolvesWhatWasLoaded();
+    void removingARowKeepsItsCommentThroughSaveAndReload();
+    void credentialsAreTheSameWithOrWithoutATabSwitch();
     void sourceEditsReachTheNamedFields();
     void aLockedProfileIsNeverOverwritten();
     void anUnknownStorageLayoutBlocksSaving();
@@ -619,11 +632,11 @@ private Q_SLOTS:
 
     void directiveTableEditsReachTheStoredProfile();
     void directiveTableKeepsEntriesTheEditorDoesNotUnderstand();
-    void commentsInAStoredProfileAreNeitherShownNorSavedBack();
-    void blankLinesInAStoredProfileAreNeitherShownNorSavedBack();
-    void aCommentTypedIntoAScopeBodyIsNotSaved();
-    void aBlankLineTypedIntoTheSourceIsNotSaved();
-    void aBlankLineTypedIntoAScopeBodyIsNotSaved();
+    void commentsInAStoredProfileAreKeptButNotShownAsRows();
+    void blankLinesInAStoredProfileAreKeptButNotShownAsRows();
+    void aCommentTypedIntoAScopeBodyIsSaved();
+    void aBlankLineTypedIntoTheSourceIsSaved();
+    void aBlankLineTypedIntoAScopeBodyIsSaved();
     void aBlockBodyCanBeEditedInTheTable();
 
     void removingARemoteDoesNotMoveAnothersExtraArguments();
@@ -705,8 +718,10 @@ void Openvpn3WidgetTest::untouchedSecretProfileRoundTrips()
     const QVariantMap map = widget.setting();
 
     QCOMPARE(storedProfileOf(map), kProfile);
-    QCOMPARE(dataOf(map).value(u"profile-storage"_s), u"secret"_s);
+    // Saved in the backend's layout: the flags kept, the older marker gone.
+    QVERIFY(!dataOf(map).contains(u"profile-storage"_s));
     QCOMPARE(dataOf(map).value(u"profile-flags"_s), u"1"_s);
+    QCOMPARE(dataOf(map).value(u"remote"_s), u"vpn1.example.org"_s);
     QVERIFY(!dataOf(map).contains(u"profile"_s));
 }
 
@@ -822,18 +837,423 @@ void Openvpn3WidgetTest::sourceEditsAreTakenVerbatim()
     QCOMPARE(storedProfileOf(widget.setting()), replacement);
 }
 
-void Openvpn3WidgetTest::aCommentTypedIntoTheSourceIsDropped()
+void Openvpn3WidgetTest::aCommentTypedIntoTheSourceIsKept()
 {
     OpenVpn3SettingWidget widget(legacySetting());
     QPlainTextEdit *source = sourceEdit(&widget);
     QVERIFY(source);
 
     tabs(&widget)->setCurrentIndex(2);
-    source->setPlainText(u"# a comment of mine\nclient\nremote typed.example.org 1234 tcp # here\n"_s);
+    const QString typed = u"# a comment of mine\nclient\nremote typed.example.org 1234 tcp # here\n"_s;
+    source->setPlainText(typed);
 
-    // The profile is not a file anybody will open again, so a comment typed
-    // into it has nowhere to live; the rest of the text is taken as typed.
-    QCOMPARE(storedProfileOf(widget.setting()), u"client\nremote typed.example.org 1234 tcp\n"_s);
+    // Taken exactly as typed.
+    QCOMPARE(storedProfileOf(widget.setting()), typed);
+    tabs(&widget)->setCurrentIndex(1);
+    tabs(&widget)->setCurrentIndex(2);
+    QCOMPARE(source->toPlainText(), typed);
+    QCOMPARE(storedProfileOf(widget.setting()), typed);
+}
+
+void Openvpn3WidgetTest::theSourceShowsTheStoredDocumentVerbatim()
+{
+    // Whatever layout it is stored in, the Profile Source page shows the
+    // stored document as it is, and saving without an edit stores it again
+    // as it is.
+    for (const auto &setting : {legacySetting(kCommented), secretSetting(u"1"_s, true, kCommented), upstreamSetting(u"0"_s, true, kCommented)}) {
+        OpenVpn3SettingWidget widget(setting);
+        QCOMPARE(sourceEdit(&widget)->toPlainText(), kCommented);
+        QCOMPARE(widget.profileText(), kCommented);
+        QCOMPARE(storedProfileOf(widget.setting()), kCommented);
+    }
+}
+
+void Openvpn3WidgetTest::visitingThePagesNeverRewritesTheDocument()
+{
+    // A document the backend's import would normalize -- indentation, an
+    // escaped trailing space, a scope naming a file that is not there, a
+    // comment where a reference could be -- is not put through it by looking
+    // at it: no page visit reimports it.
+    const QString odd = u"# keep\n  client\nremote vpn1.example.org 1194 udp   ; note\nsetenv a value\\ \n# ca not-a-file.crt\n<connection>\nremote b.example.org\nca missing-scoped.crt\n</connection>\n<x-blob>\n  payload  \n</x-blob>"_s;
+    OpenVpn3SettingWidget widget(upstreamSetting(u"1"_s, true, odd));
+    for (int round = 0; round < 2; ++round) {
+        for (int tab : {1, 2, 0, 2, 1, 0}) {
+            tabs(&widget)->setCurrentIndex(tab);
+            QCOMPARE(widget.profileText(), odd);
+        }
+    }
+    QVERIFY2(widget.isValid(), qPrintable(widget.blockingProblem()));
+    QCOMPARE(storedProfileOf(widget.setting()), odd);
+    QVERIFY(!widget.hasProfileEdits());
+}
+
+void Openvpn3WidgetTest::tableAndFieldEditsKeepTheFormatting()
+{
+    // The editor end to end: the named fields, the server table and the
+    // directive table all edit the one document, and the comments, blank
+    // lines and inline comments of the stored profile survive every one of
+    // those edits, the tab switches between them, the save, and a reload.
+    const QString stored = u"# Provider notes\nclient\n\n; Primary server\nremote vpn1.example.org 1194 udp   # main\n# backup\nremote vpn2.example.org 443 tcp\ndev tun ; device\n\n"
+                           u"<connection>\n# fallback\nremote fallback.example.org 1194 udp\n</connection>\nverb 3 # chatty\n# end"_s;
+    OpenVpn3SettingWidget widget(upstreamSetting(u"1"_s, true, stored));
+
+    // General page: a remote's port, and the device.
+    QTableWidget *remotes = remotesTable(&widget);
+    QCOMPARE(remotes->rowCount(), 2);
+    remotes->item(0, 1)->setText(u"1195"_s);
+    widget.findChild<QComboBox *>(u"openvpn3_device"_s)->setEditText(u"tap"_s);
+    // ... and moving the backup server up, which takes its comment along.
+    remotes->selectRow(1);
+    widget.findChild<QPushButton *>(u"openvpn3_remote_up"_s)->click();
+
+    // Directive table: an argument, a new row, a removal.
+    tabs(&widget)->setCurrentIndex(1);
+    QTableWidget *table = directivesTable(&widget);
+    table->item(rowOfDirective(table, u"verb"_s), 2)->setText(u"4"_s);
+    table->selectRow(rowOfDirective(table, u"client"_s));
+    widget.findChild<QPushButton *>(u"openvpn3_directives_add"_s)->click();
+    table->item(1, 1)->setText(u"nobind"_s);
+    for (int row = 0; row < table->rowCount(); ++row) {
+        QVERIFY(table->item(row, 0)->text() == u"Directive"_s || table->item(row, 0)->text() == u"Block"_s);
+        QVERIFY(!table->item(row, 1)->text().startsWith(u'#'));
+    }
+
+    const QString expected = u"# Provider notes\nclient\nnobind\n\n# backup\nremote vpn2.example.org 443 tcp\n; Primary server\nremote vpn1.example.org 1195 udp   # main\ndev tap ; device\n\n"
+                             u"<connection>\n# fallback\nremote fallback.example.org 1194 udp\n</connection>\nverb 4 # chatty\n# end"_s;
+    tabs(&widget)->setCurrentIndex(2);
+    QCOMPARE(sourceEdit(&widget)->toPlainText(), expected);
+    tabs(&widget)->setCurrentIndex(0);
+    QVERIFY2(widget.isValid(), qPrintable(widget.blockingProblem()));
+    const QVariantMap map = widget.setting();
+    QCOMPARE(storedProfileOf(map), expected);
+
+    // Reloaded from what was saved, the same document, rows and all.
+    OpenVpn3SettingWidget reloaded(settingFrom(dataOf(map), secretsOf(map)));
+    QCOMPARE(reloaded.profileText(), expected);
+    QCOMPARE(sourceEdit(&reloaded)->toPlainText(), expected);
+    QCOMPARE(remotesTable(&reloaded)->item(0, 0)->text(), u"vpn2.example.org"_s);
+}
+
+void Openvpn3WidgetTest::aCrlfDocumentStaysCrlfThroughEdits()
+{
+    const QString stored = u"# w\r\nclient\r\nremote vpn1.example.org 1194 udp # main\r\n\r\ndev tun\r\n"_s;
+    OpenVpn3SettingWidget widget(upstreamSetting(u"1"_s, true, stored));
+    // The text box has no carriage returns to show; the document keeps them.
+    QCOMPARE(sourceEdit(&widget)->toPlainText(), QString(stored).remove(u'\r'));
+    tabs(&widget)->setCurrentIndex(2);
+    tabs(&widget)->setCurrentIndex(0);
+    QCOMPARE(storedProfileOf(widget.setting()), stored);
+
+    widget.findChild<QComboBox *>(u"openvpn3_device"_s)->setEditText(u"tap"_s);
+    QCOMPARE(storedProfileOf(widget.setting()), u"# w\r\nclient\r\nremote vpn1.example.org 1194 udp # main\r\n\r\ndev tap\r\n"_s);
+
+    tabs(&widget)->setCurrentIndex(2);
+    sourceEdit(&widget)->setPlainText(sourceEdit(&widget)->toPlainText() + u"verb 3\n"_s);
+    tabs(&widget)->setCurrentIndex(0);
+    QCOMPARE(storedProfileOf(widget.setting()), u"# w\r\nclient\r\nremote vpn1.example.org 1194 udp # main\r\n\r\ndev tap\r\nverb 3\r\n"_s);
+}
+
+void Openvpn3WidgetTest::anUpstreamConnectionIsSavedInTheUpstreamLayout()
+{
+    for (const QString &flags : {u"0"_s, u"1"_s}) {
+        OpenVpn3SettingWidget widget(upstreamSetting(flags));
+        QVERIFY2(widget.isValid(), qPrintable(widget.blockingProblem()));
+        // Its storage is what it says, offered without the public choice.
+        QCOMPARE(storageCombo(&widget)->currentData().toInt(), flags.toInt());
+        QCOMPARE(storageCombo(&widget)->findData(-1), -1);
+
+        const QVariantMap map = widget.setting();
+        QCOMPARE(dataOf(map).value(u"profile-flags"_s), flags);
+        QCOMPARE(dataOf(map).value(u"remote"_s), u"vpn1.example.org"_s);
+        QCOMPARE(dataOf(map).value(u"x-other"_s), u"keep"_s);
+        QVERIFY(!dataOf(map).contains(u"profile-storage"_s));
+        QVERIFY(!dataOf(map).contains(u"profile"_s));
+        QCOMPARE(secretsOf(map).value(u"profile"_s), encoded(kProfile));
+    }
+}
+
+void Openvpn3WidgetTest::aMarkerConnectionIsMovedToTheUpstreamLayout_data()
+{
+    QTest::addColumn<NMStringMap>("data");
+    QTest::addColumn<QString>("flags");
+    QTest::newRow("wallet") << NMStringMap{{u"profile-storage"_s, u"secret"_s}, {u"profile-flags"_s, u"1"_s}} << u"1"_s;
+    QTest::newRow("system") << NMStringMap{{u"profile-storage"_s, u"secret"_s}, {u"profile-flags"_s, u"0"_s}} << u"0"_s;
+    // NetworkManager reads absent flags as system-owned, and so is it saved.
+    QTest::newRow("no flags") << NMStringMap{{u"profile-storage"_s, u"secret"_s}, {u"password-flags"_s, u"1"_s}} << u"0"_s;
+    // And a stale public copy next to the secret is never what is saved.
+    QTest::newRow("stale public copy") << NMStringMap{{u"profile-storage"_s, u"secret"_s}, {u"profile-flags"_s, u"1"_s}, {u"profile"_s, encoded(u"client\nremote stale.example.org\n"_s)}}
+                                       << u"1"_s;
+}
+
+void Openvpn3WidgetTest::aMarkerConnectionIsMovedToTheUpstreamLayout()
+{
+    QFETCH(NMStringMap, data);
+    QFETCH(QString, flags);
+    data.insert(u"username"_s, u"alice"_s);
+    OpenVpn3SettingWidget widget(settingFrom(data, {{u"profile"_s, encoded(kProfile)}}));
+    QVERIFY2(widget.isValid(), qPrintable(widget.blockingProblem()));
+
+    const QVariantMap map = widget.setting();
+    QCOMPARE(dataOf(map).value(u"profile-flags"_s), flags);
+    QVERIFY(!dataOf(map).contains(u"profile-storage"_s));
+    QVERIFY(!dataOf(map).contains(u"profile"_s));
+    QCOMPARE(storedProfileOf(map), kProfile);
+    QVERIFY(!storedProfileOf(map).contains(u"stale"_s));
+}
+
+void Openvpn3WidgetTest::staleOrUnknownLayoutsFailClosed_data()
+{
+    QTest::addColumn<NMStringMap>("data");
+    QTest::addColumn<NMStringMap>("secrets");
+    const NMStringMap secret{{u"profile"_s, encoded(kProfile)}};
+    const NMStringMap none;
+    const QString stale = encoded(u"client\nremote stale.example.org\n"_s);
+    QTest::newRow("upstream, locked, stale copy") << NMStringMap{{u"profile-flags"_s, u"1"_s}, {u"profile"_s, stale}} << none;
+    QTest::newRow("marker, locked, stale copy") << NMStringMap{{u"profile-storage"_s, u"secret"_s}, {u"profile-flags"_s, u"0"_s}, {u"profile"_s, stale}} << none;
+    QTest::newRow("unknown marker") << NMStringMap{{u"profile-storage"_s, u"v9"_s}, {u"profile-flags"_s, u"0"_s}} << secret;
+    QTest::newRow("upstream, flags 2") << NMStringMap{{u"profile-flags"_s, u"2"_s}} << secret;
+    QTest::newRow("upstream, flags nonsense") << NMStringMap{{u"profile-flags"_s, u"x"_s}} << secret;
+    QTest::newRow("marker, flags 4") << NMStringMap{{u"profile-storage"_s, u"secret"_s}, {u"profile-flags"_s, u"4"_s}} << secret;
+}
+
+void Openvpn3WidgetTest::staleOrUnknownLayoutsFailClosed()
+{
+    QFETCH(NMStringMap, data);
+    QFETCH(NMStringMap, secrets);
+    OpenVpn3SettingWidget widget(settingFrom(data, secrets));
+
+    // Nothing to save, and what comes back is the connection as it was.
+    QVERIFY(!widget.isValid());
+    QVERIFY(widget.storedProfileIsUnreadable());
+    QVERIFY(!widget.profileText().contains(u"stale"_s));
+    const QVariantMap map = widget.setting();
+    QCOMPARE(dataOf(map), data);
+    QCOMPARE(secretsOf(map), secrets);
+}
+
+void Openvpn3WidgetTest::lateSecretsCannotOverwriteAnEditedProfile()
+{
+    // A locked upstream connection whose secrets arrive after the user has
+    // started over with a profile of their own: the reply is not allowed to
+    // put the old one back.
+    OpenVpn3SettingWidget widget(upstreamSetting(u"0"_s, false));
+    QVERIFY(widget.storedProfileIsUnreadable());
+    widget.loadSecrets(settingFrom({{u"profile-flags"_s, u"0"_s}}, {{u"profile"_s, encoded(kCommented)}}));
+    QCOMPARE(widget.profileText(), kCommented);
+
+    tabs(&widget)->setCurrentIndex(2);
+    sourceEdit(&widget)->setPlainText(u"# mine\nclient\nremote mine.example.org\n"_s);
+    widget.loadSecrets(settingFrom({{u"profile-flags"_s, u"0"_s}}, {{u"profile"_s, encoded(kProfile)}, {u"challenge-response"_s, u"123456"_s}}));
+    QCOMPARE(storedProfileOf(widget.setting()), u"# mine\nclient\nremote mine.example.org\n"_s);
+    // And a one-time code that came with it is never stored.
+    QVERIFY(!secretsOf(widget.setting()).contains(u"challenge-response"_s));
+}
+
+void Openvpn3WidgetTest::connectionBlockCaveatsAreShown()
+{
+    const QString profile = u"client\nremote vpn1.example.org\n<connection>\nremote b.example.org\nca /etc/scoped-ca.crt\nhttp-proxy p.example.org 8080\n</connection>\n"_s;
+    OpenVpn3SettingWidget widget(upstreamSetting(u"1"_s, true, profile));
+    // A caveat, not a refusal: the scope is saved as written.
+    QVERIFY2(widget.isValid(), qPrintable(widget.blockingProblem()));
+    const QString status = widget.findChild<QLabel *>(u"openvpn3_status"_s)->text();
+    QVERIFY2(status.contains(u"/etc/scoped-ca.crt"_s), qPrintable(status));
+    QVERIFY2(status.contains(u"http-proxy"_s), qPrintable(status));
+    QCOMPARE(storedProfileOf(widget.setting()), profile);
+}
+
+void Openvpn3WidgetTest::resolvingAReferenceTouchesOnlyThatEntry()
+{
+    OPENVPN3_REQUIRE_BACKEND();
+    // A file reference typed into the source is embedded when the page is
+    // left, through the backend, and nothing else in the document moves: not
+    // the formatting, not a line the import would have stripped, not a scope.
+    const QString ca = dataPath(u"pki/ca.crt"_s);
+    const QString head = u"# typed\nclient\n  remote vpn1.example.org 1194 udp ; main\nsetenv a value\\ \n"_s;
+    const QString tail = u"\n<connection>\nremote b.example.org\nca scoped.crt\n</connection>\nverb 3"_s;
+    OpenVpn3SettingWidget widget(upstreamSetting(u"1"_s));
+    tabs(&widget)->setCurrentIndex(2);
+    sourceEdit(&widget)->setPlainText(head + u"ca "_s + ca + u" # company\n"_s + tail);
+    tabs(&widget)->setCurrentIndex(1);
+
+    QFile file(ca);
+    QVERIFY(file.open(QIODevice::ReadOnly));
+    const QString expected = head + u"# company\n<ca>\n"_s + QString::fromUtf8(file.readAll()) + u"</ca>\n"_s + tail;
+    QCOMPARE(widget.profileText(), expected);
+    QVERIFY2(widget.isValid(), qPrintable(widget.blockingProblem()));
+    QCOMPARE(storedProfileOf(widget.setting()), expected);
+}
+
+void Openvpn3WidgetTest::editingAServerKeepsWhatOpenvpn3ReadsFromTheLine()
+{
+    // A hash glued to the host is a comment for openvpn3; editing the port on
+    // the General page must not make it part of the host name.
+    OpenVpn3SettingWidget widget(upstreamSetting(u"1"_s, true, u"client\nremote vpn1.example.org#primary 1194 udp\n"_s));
+    QTableWidget *remotes = remotesTable(&widget);
+    QCOMPARE(remotes->item(0, 0)->text(), u"vpn1.example.org"_s);
+    remotes->item(0, 1)->setText(u"1195"_s);
+    QCOMPARE(storedProfileOf(widget.setting()), u"client\nremote vpn1.example.org 1195 #primary 1194 udp\n"_s);
+    QCOMPARE(Openvpn3Profile::fromText(storedProfileOf(widget.setting())).remoteHosts(), QStringList({u"vpn1.example.org"_s}));
+}
+
+void Openvpn3WidgetTest::aMissingFileThatAppearsIsPickedUpWithoutAnEdit()
+{
+    OPENVPN3_REQUIRE_BACKEND();
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(u"late-ca.pem"_s);
+    OpenVpn3SettingWidget widget(upstreamSetting(u"1"_s));
+    tabs(&widget)->setCurrentIndex(2);
+    sourceEdit(&widget)->setPlainText(u"client\nremote vpn1.example.org\nca "_s + path + u"\n"_s);
+    QVERIFY(!widget.isValid());
+    QVERIFY2(widget.blockingProblem().contains(path), qPrintable(widget.blockingProblem()));
+
+    // The file is put there; nothing in the profile changes, and the next
+    // look at it finds the file rather than the old failure.
+    QVERIFY(QFile::copy(dataPath(u"pki/ca.crt"_s), path));
+    QVERIFY2(widget.isValid(), qPrintable(widget.blockingProblem()));
+    tabs(&widget)->setCurrentIndex(0);
+    QVERIFY(widget.profileText().contains(u"<ca>\n"_s));
+}
+
+void Openvpn3WidgetTest::aChangedOrDeletedFileIsReadAgainOnSave()
+{
+    OPENVPN3_REQUIRE_BACKEND();
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(u"client.key"_s);
+    const auto write = [&path](const QByteArray &contents) {
+        QFile file(path);
+        return file.open(QIODevice::WriteOnly | QIODevice::Truncate) && file.write(contents) == contents.size();
+    };
+    QVERIFY(write("-----BEGIN PRIVATE KEY-----\nOLD\n-----END PRIVATE KEY-----\n"));
+    OpenVpn3SettingWidget widget(upstreamSetting(u"1"_s));
+    tabs(&widget)->setCurrentIndex(2);
+    sourceEdit(&widget)->setPlainText(u"client\nremote vpn1.example.org\nkey "_s + path + u"\n"_s);
+    QVERIFY2(widget.isValid(), qPrintable(widget.blockingProblem()));
+
+    // Replaced while the page shows the reference: the save reads it now.
+    QVERIFY(write("-----BEGIN PRIVATE KEY-----\nNEW\n-----END PRIVATE KEY-----\n"));
+    QVERIFY(widget.isValid());
+    QVERIFY(storedProfileOf(widget.setting()).contains(u"\nNEW\n"_s));
+    QVERIFY(!storedProfileOf(widget.setting()).contains(u"OLD"_s));
+
+    // Deleted: not saveable, and the profile is not changed.
+    QVERIFY(QFile::remove(path));
+    QVERIFY(!widget.isValid());
+    QVERIFY2(widget.blockingProblem().contains(path), qPrintable(widget.blockingProblem()));
+    QCOMPARE(storedProfileOf(widget.setting()), kProfile);
+}
+
+void Openvpn3WidgetTest::textInsideAnOpaqueBlockIsNeverResolved()
+{
+    // An indented closing tag is payload for openvpn3, so the reference after
+    // it is too; saving reads no file and changes nothing.
+    const QString text = u"client\nremote vpn1.example.org\n<x-notes>\n </x-notes>\nca /nonexistent/ca.pem\n</x-notes>\n# ca /nonexistent/other.pem\n"_s;
+    OpenVpn3SettingWidget widget(upstreamSetting(u"1"_s, true, text));
+    QVERIFY2(widget.isValid(), qPrintable(widget.blockingProblem()));
+    for (int tab : {1, 2, 0}) {
+        tabs(&widget)->setCurrentIndex(tab);
+    }
+    QCOMPARE(storedProfileOf(widget.setting()), text);
+}
+
+void Openvpn3WidgetTest::visitingThePagesNeverResolvesWhatWasLoaded()
+{
+    OPENVPN3_REQUIRE_BACKEND();
+    // A stored profile that still points outside itself -- written by
+    // something else -- is shown as it is stored however often the pages are
+    // visited; only saving makes it self-contained.
+    const QString stored = u"client\nremote vpn1.example.org\nca "_s + dataPath(u"pki/ca.crt"_s)
+        + u" # company CA\n<auth-user-pass>\nalice\nstored-pw\n</auth-user-pass>\n"_s;
+    OpenVpn3SettingWidget widget(upstreamSetting(u"1"_s, true, stored));
+    for (int tab : {2, 1, 0, 2, 0, 1, 2}) {
+        tabs(&widget)->setCurrentIndex(tab);
+        QCOMPARE(widget.profileText(), stored);
+    }
+    QCOMPARE(sourceEdit(&widget)->toPlainText(), stored);
+    QVERIFY(!widget.hasProfileEdits());
+
+    // A reference typed in afterwards is resolved on leaving the page, and
+    // the loaded ones still are not.
+    const QString typed = stored + u"cert "_s + dataPath(u"pki/client.crt"_s) + u"\n"_s;
+    sourceEdit(&widget)->setPlainText(typed);
+    tabs(&widget)->setCurrentIndex(0);
+    QVERIFY(widget.profileText().startsWith(stored));
+    QVERIFY(widget.profileText().contains(u"<cert>\n"_s));
+    QVERIFY(!widget.profileText().contains(u"client.crt"_s));
+
+    // Saving makes the whole thing self-contained.
+    QVERIFY2(widget.isValid(), qPrintable(widget.blockingProblem()));
+    const QVariantMap map = widget.setting();
+    QVERIFY(!storedProfileOf(map).contains(u"ca.crt"_s));
+    QVERIFY(storedProfileOf(map).contains(u"# company CA\n<ca>\n"_s));
+    QVERIFY(!storedProfileOf(map).contains(u"stored-pw"_s));
+    QCOMPARE(dataOf(map).value(u"username"_s), u"alice"_s);
+    QCOMPARE(secretsOf(map).value(u"password"_s), u"stored-pw"_s);
+}
+
+void Openvpn3WidgetTest::removingARowKeepsItsCommentThroughSaveAndReload()
+{
+    const QString stored = u"client\n# servers\nremote vpn1.example.org # retain this note\nremote vpn2.example.org\n"_s;
+    OpenVpn3SettingWidget widget(upstreamSetting(u"1"_s, true, stored));
+    tabs(&widget)->setCurrentIndex(1);
+    QTableWidget *table = directivesTable(&widget);
+    table->selectRow(rowOfDirective(table, u"remote"_s));
+    widget.findChild<QPushButton *>(u"openvpn3_directives_remove"_s)->click();
+
+    const QString expected = u"client\n# servers\n# retain this note\nremote vpn2.example.org\n"_s;
+    tabs(&widget)->setCurrentIndex(2);
+    QCOMPARE(sourceEdit(&widget)->toPlainText(), expected);
+    tabs(&widget)->setCurrentIndex(0);
+    QVERIFY2(widget.isValid(), qPrintable(widget.blockingProblem()));
+    const QVariantMap map = widget.setting();
+    QCOMPARE(storedProfileOf(map), expected);
+    OpenVpn3SettingWidget reloaded(settingFrom(dataOf(map), secretsOf(map)));
+    QCOMPARE(reloaded.profileText(), expected);
+
+    // The same through the server table on the General page.
+    OpenVpn3SettingWidget general(upstreamSetting(u"1"_s, true, stored));
+    remotesTable(&general)->selectRow(0);
+    general.findChild<QPushButton *>(u"openvpn3_remote_remove"_s)->click();
+    QCOMPARE(storedProfileOf(general.setting()), expected);
+}
+
+void Openvpn3WidgetTest::credentialsAreTheSameWithOrWithoutATabSwitch()
+{
+    OPENVPN3_REQUIRE_BACKEND();
+    // A stored profile with inline credentials, and a second set typed in
+    // after them: the backend takes the later one, and so does the save,
+    // whether or not the pages were switched in between.
+    const QString stored = u"client\nremote vpn1.example.org\n<auth-user-pass>\nalice\nold-password\n</auth-user-pass>\n"_s;
+    const QString typed = stored + u"<auth-user-pass>\nbob\nnew-password\n</auth-user-pass>\n"_s;
+    QList<QPair<QString, QString>> saved;
+    for (const bool switchTabs : {false, true}) {
+        OpenVpn3SettingWidget widget(upstreamSetting(u"1"_s, true, stored));
+        tabs(&widget)->setCurrentIndex(2);
+        sourceEdit(&widget)->setPlainText(typed);
+        if (switchTabs) {
+            tabs(&widget)->setCurrentIndex(0);
+        }
+        QVERIFY2(widget.isValid(), qPrintable(widget.blockingProblem()));
+        const QVariantMap map = widget.setting();
+        saved.append({dataOf(map).value(u"username"_s), secretsOf(map).value(u"password"_s)});
+        QVERIFY(!storedProfileOf(map).contains(u"password"_s));
+    }
+    QCOMPARE(saved.at(0), (QPair<QString, QString>{u"bob"_s, u"new-password"_s}));
+    QCOMPARE(saved.at(1), saved.at(0));
+}
+
+void Openvpn3WidgetTest::aRelativePathIsExplained()
+{
+    OpenVpn3SettingWidget widget(upstreamSetting(u"1"_s));
+    tabs(&widget)->setCurrentIndex(2);
+    sourceEdit(&widget)->setPlainText(u"client\nremote vpn1.example.org\nkey keys/client.key\n"_s);
+    QVERIFY(!widget.isValid());
+    QVERIFY2(widget.blockingProblem().contains(u"keys/client.key"_s), qPrintable(widget.blockingProblem()));
+    QVERIFY2(widget.blockingProblem().contains(u"relative"_s), qPrintable(widget.blockingProblem()));
+    // Nothing was thrown away meanwhile.
+    tabs(&widget)->setCurrentIndex(0);
+    QCOMPARE(widget.profileText(), u"client\nremote vpn1.example.org\nkey keys/client.key\n"_s);
 }
 
 void Openvpn3WidgetTest::sourceEditsReachTheNamedFields()
@@ -958,9 +1378,7 @@ void Openvpn3WidgetTest::nothingSensitiveEverReachesTheDataMap()
 
 void Openvpn3WidgetTest::reimportReplacesOnlyTheVpnConfiguration()
 {
-    if (!backendAvailable()) {
-        QSKIP("the openvpn3 backend's libnm plugin is not installed");
-    }
+    OPENVPN3_REQUIRE_BACKEND();
     OpenVpn3SettingWidget widget(legacySetting());
     QCOMPARE(dataOf(widget.setting()).value(u"username"_s), u"alice"_s);
 
@@ -1004,9 +1422,7 @@ void Openvpn3WidgetTest::aFailedReimportChangesNothing()
 
 void Openvpn3WidgetTest::reimportKeepsAnExplicitSystemStorageChoice()
 {
-    if (!backendAvailable()) {
-        QSKIP("the openvpn3 backend's libnm plugin is not installed");
-    }
+    OPENVPN3_REQUIRE_BACKEND();
     OpenVpn3SettingWidget widget(secretSetting(u"0"_s));
 
     QVERIFY(widget.importProfile(dataPath(u"office.ovpn"_s)));
@@ -1028,9 +1444,7 @@ void Openvpn3WidgetTest::editingMarksTheProfileSoAReimportCanWarn()
 
 void Openvpn3WidgetTest::vpnPropertiesThisPageDoesNotShowSurviveASave()
 {
-    if (!backendAvailable()) {
-        QSKIP("the openvpn3 backend's libnm plugin is not installed");
-    }
+    OPENVPN3_REQUIRE_BACKEND();
     // The editor replaces the whole vpn setting, so a timeout set with nmcli
     // must not be reset to the default just because this page never shows it.
     auto setting = legacySetting();
@@ -1108,11 +1522,11 @@ void Openvpn3WidgetTest::directiveTableKeepsEntriesTheEditorDoesNotUnderstand()
     QCOMPARE(storedProfileOf(widget.setting()), kProfile);
 }
 
-void Openvpn3WidgetTest::commentsInAStoredProfileAreNeitherShownNorSavedBack()
+void Openvpn3WidgetTest::commentsInAStoredProfileAreKeptButNotShownAsRows()
 {
-    // A connection imported by an older build still carries its comments and
-    // its blank lines.  Opening it is not supposed to show rows for them, and
-    // saving it is not supposed to write them back.
+    // A profile the backend imported keeps its comments and blank lines.
+    // The table shows rows for none of them, and saving writes all of them
+    // back.
     OpenVpn3SettingWidget widget(legacySetting(kCommented));
     tabs(&widget)->setCurrentIndex(1);
     QTableWidget *table = directivesTable(&widget);
@@ -1125,22 +1539,18 @@ void Openvpn3WidgetTest::commentsInAStoredProfileAreNeitherShownNorSavedBack()
     QVERIFY(rowOfDirective(table, u"client"_s) >= 0);
     QVERIFY(rowOfDirective(table, u"ca"_s) >= 0);
 
-    // The quoted hash is a value, the one in the certificate is payload and so
-    // is the blank line in there; only the formatting between directives went.
-    QCOMPARE(widget.profileText(), kCommentedKept);
-    QCOMPARE(storedProfileOf(widget.setting()), kCommentedKept);
+    QCOMPARE(widget.profileText(), kCommented);
+    QCOMPARE(storedProfileOf(widget.setting()), kCommented);
+    QCOMPARE(Openvpn3Profile::fromText(widget.profileText()).optionsText(), kCommentedKept);
 
-    // And the editor still reads the profile the same way afterwards.
+    // And the editor still reads the profile the same way.
     QTableWidget *remotes = remotesTable(&widget);
     QCOMPARE(remotes->rowCount(), 1);
     QCOMPARE(remotes->item(0, 0)->text(), u"vpn1.example.org"_s);
 }
 
-void Openvpn3WidgetTest::aCommentTypedIntoAScopeBodyIsNotSaved()
+void Openvpn3WidgetTest::aCommentTypedIntoAScopeBodyIsSaved()
 {
-    // The source page drops a comment typed into it; the directive table has
-    // to drop one typed into a <connection> body too, or the same comment
-    // would be saved on one page and refused on the other.
     OpenVpn3SettingWidget widget(legacySetting(u"client\n<connection>\nremote a.example.org 1194 udp\n</connection>\n"_s));
     tabs(&widget)->setCurrentIndex(1);
     QTableWidget *table = directivesTable(&widget);
@@ -1153,18 +1563,16 @@ void Openvpn3WidgetTest::aCommentTypedIntoAScopeBodyIsNotSaved()
     QVERIFY(body);
     body->setPlainText(u"# mine\nremote b.example.org 443 tcp # here\n"_s);
 
-    const auto expected = u"client\n<connection>\nremote b.example.org 443 tcp\n</connection>\n"_s;
+    const auto expected = u"client\n<connection>\n# mine\nremote b.example.org 443 tcp # here\n</connection>\n"_s;
     QCOMPARE(widget.profileText(), expected);
     QCOMPARE(storedProfileOf(widget.setting()), expected);
+    tabs(&widget)->setCurrentIndex(2);
+    QCOMPARE(sourceEdit(&widget)->toPlainText(), expected);
 }
 
-void Openvpn3WidgetTest::blankLinesInAStoredProfileAreNeitherShownNorSavedBack()
+void Openvpn3WidgetTest::blankLinesInAStoredProfileAreKeptButNotShownAsRows()
 {
-    // The same for a connection that still has blank lines in it: no rows for
-    // them, and saving does not write them back.  The ones inside the opaque
-    // payload are content and both the table and the save path leave them be.
     const auto stored = u"\nclient\n\nremote vpn1.example.org 1194 udp\n   \n<ca>\n\nPEM\n\n</ca>\n\n"_s;
-    const auto kept = u"client\nremote vpn1.example.org 1194 udp\n<ca>\n\nPEM\n\n</ca>\n"_s;
     OpenVpn3SettingWidget widget(legacySetting(stored));
     tabs(&widget)->setCurrentIndex(1);
     QTableWidget *table = directivesTable(&widget);
@@ -1174,20 +1582,20 @@ void Openvpn3WidgetTest::blankLinesInAStoredProfileAreNeitherShownNorSavedBack()
         QVERIFY(table->item(row, 0)->text() != u"Blank line"_s);
         QVERIFY(!table->item(row, 1)->text().isEmpty());
     }
-    QCOMPARE(widget.profileText(), kept);
-    QCOMPARE(storedProfileOf(widget.setting()), kept);
+    QCOMPARE(widget.profileText(), stored);
+    QCOMPARE(storedProfileOf(widget.setting()), stored);
 
     // Visiting every page and coming back is not an edit, and saving again
-    // changes nothing more: the document is a fixed point.
+    // changes nothing more.
     for (int tab = 0; tab < tabs(&widget)->count(); ++tab) {
         tabs(&widget)->setCurrentIndex(tab);
     }
-    QCOMPARE(storedProfileOf(widget.setting()), kept);
+    QCOMPARE(storedProfileOf(widget.setting()), stored);
     OpenVpn3SettingWidget again(legacySetting(storedProfileOf(widget.setting())));
-    QCOMPARE(storedProfileOf(again.setting()), kept);
+    QCOMPARE(storedProfileOf(again.setting()), stored);
 }
 
-void Openvpn3WidgetTest::aBlankLineTypedIntoTheSourceIsNotSaved()
+void Openvpn3WidgetTest::aBlankLineTypedIntoTheSourceIsSaved()
 {
     OpenVpn3SettingWidget widget(legacySetting());
     QPlainTextEdit *source = sourceEdit(&widget);
@@ -1196,17 +1604,12 @@ void Openvpn3WidgetTest::aBlankLineTypedIntoTheSourceIsNotSaved()
     tabs(&widget)->setCurrentIndex(2);
     source->setPlainText(u"\nclient\n\nremote typed.example.org 1234 tcp\n  \n"_s);
 
-    // The profile is not a file anybody will open again, so a blank line typed
-    // into it has nowhere to live; the rest of the text is taken as typed.
-    QCOMPARE(storedProfileOf(widget.setting()), u"client\nremote typed.example.org 1234 tcp\n"_s);
-
-    // And the page shows what was actually kept, rather than leaving the user
-    // looking at lines the connection does not have.
+    QCOMPARE(storedProfileOf(widget.setting()), u"\nclient\n\nremote typed.example.org 1234 tcp\n  \n"_s);
     tabs(&widget)->setCurrentIndex(0);
-    QCOMPARE(source->toPlainText(), u"client\nremote typed.example.org 1234 tcp\n"_s);
+    QCOMPARE(source->toPlainText(), u"\nclient\n\nremote typed.example.org 1234 tcp\n  \n"_s);
 }
 
-void Openvpn3WidgetTest::aBlankLineTypedIntoAScopeBodyIsNotSaved()
+void Openvpn3WidgetTest::aBlankLineTypedIntoAScopeBodyIsSaved()
 {
     OpenVpn3SettingWidget widget(legacySetting(u"client\n<connection>\nremote a.example.org 1194 udp\n</connection>\n"_s));
     tabs(&widget)->setCurrentIndex(1);
@@ -1220,7 +1623,7 @@ void Openvpn3WidgetTest::aBlankLineTypedIntoAScopeBodyIsNotSaved()
     QVERIFY(body);
     body->setPlainText(u"\nremote b.example.org 443 tcp\n\n"_s);
 
-    const auto expected = u"client\n<connection>\nremote b.example.org 443 tcp\n</connection>\n"_s;
+    const auto expected = u"client\n<connection>\n\nremote b.example.org 443 tcp\n\n</connection>\n"_s;
     QCOMPARE(widget.profileText(), expected);
     QCOMPARE(storedProfileOf(widget.setting()), expected);
 }
@@ -1461,13 +1864,14 @@ void Openvpn3WidgetTest::reorderingServersMovesOnlyTheServers()
 
 void Openvpn3WidgetTest::credentialsForAProfileThatAsksInsideAConnectionBlockSurvive()
 {
-    // openvpn3 reads <connection> as options, so a profile can ask for a
-    // username and password in there and need them just as much. Looking only
-    // at the top level would throw the stored credentials away on the next
-    // save, and the connection would stop coming up.
+    // openvpn3 itself ignores an auth-user-pass inside a <connection> block,
+    // but the backend's service does not: it refuses to connect without a
+    // username (service.py) and asks for the password. Looking only at the
+    // top level would throw the stored credentials away on the next save,
+    // and the connection would stop coming up.
     const auto nested = QStringLiteral("client\n<connection>\nremote only.example.org 1194 udp\nauth-user-pass\n</connection>\n");
-    auto setting = settingFrom({{u"profile"_s, encoded(nested)}, {u"username"_s, u"alice"_s}, {u"password-flags"_s, u"1"_s}},
-                               {{u"password"_s, u"stored"_s}});
+    auto setting = settingFrom({{u"profile-flags"_s, u"1"_s}, {u"username"_s, u"alice"_s}, {u"password-flags"_s, u"1"_s}},
+                               {{u"profile"_s, encoded(nested)}, {u"password"_s, u"stored"_s}});
     OpenVpn3SettingWidget widget(setting);
 
     const QVariantMap map = widget.setting();
@@ -1476,6 +1880,10 @@ void Openvpn3WidgetTest::credentialsForAProfileThatAsksInsideAConnectionBlockSur
     QCOMPARE(dataOf(map).value(u"password-flags"_s), u"1"_s);
     QCOMPARE(dataOf(map).value(u"challenge-response-flags"_s), QString::number(NetworkManager::Setting::NotSaved));
     QCOMPARE(storedProfileOf(map), nested);
+
+    // And without a username it is not saved: the service would refuse it.
+    OpenVpn3SettingWidget nameless(settingFrom({{u"profile-flags"_s, u"1"_s}}, {{u"profile"_s, encoded(nested)}}));
+    QVERIFY(!nameless.isValid());
 }
 
 void Openvpn3WidgetTest::theAuthCheckboxSaysWhenTheDirectiveIsNotItsToChange()
@@ -1703,9 +2111,7 @@ void Openvpn3WidgetTest::clearingRemovesEveryTraceOfTheDirective()
 
 void Openvpn3WidgetTest::aTypedFileReferenceIsEmbeddedOnSave()
 {
-    if (!backendAvailable()) {
-        QSKIP("the openvpn3 backend's libnm plugin is not installed");
-    }
+    OPENVPN3_REQUIRE_BACKEND();
     // Typed on the Profile Source page: openvpn3 is handed a profile and
     // nothing else, so a file it points at has to be in it by the time it is
     // saved, however it got there.
@@ -1721,9 +2127,7 @@ void Openvpn3WidgetTest::aTypedFileReferenceIsEmbeddedOnSave()
 
 void Openvpn3WidgetTest::typedInlineCredentialsBecomeConnectionCredentials()
 {
-    if (!backendAvailable()) {
-        QSKIP("the openvpn3 backend's libnm plugin is not installed");
-    }
+    OPENVPN3_REQUIRE_BACKEND();
     OpenVpn3SettingWidget widget(legacySetting());
     tabs(&widget)->setCurrentIndex(2);
     sourceEdit(&widget)->setPlainText(
@@ -1749,9 +2153,7 @@ void Openvpn3WidgetTest::typedInlineCredentialsBecomeConnectionCredentials()
 
 void Openvpn3WidgetTest::aProfileNamingAFileThatIsNotThereIsNotSaved()
 {
-    if (!backendAvailable()) {
-        QSKIP("the openvpn3 backend's libnm plugin is not installed");
-    }
+    OPENVPN3_REQUIRE_BACKEND();
     OpenVpn3SettingWidget widget(legacySetting());
     tabs(&widget)->setCurrentIndex(2);
     sourceEdit(&widget)->setPlainText(u"client\nremote a.example.org 1194 udp\nca /nonexistent/nowhere.crt\n"_s);
@@ -1766,9 +2168,7 @@ void Openvpn3WidgetTest::aProfileNamingAFileThatIsNotThereIsNotSaved()
 
 void Openvpn3WidgetTest::anUntouchedProfileIsNeverRewritten()
 {
-    if (!backendAvailable()) {
-        QSKIP("the openvpn3 backend's libnm plugin is not installed");
-    }
+    OPENVPN3_REQUIRE_BACKEND();
     // Normalising is for profiles that need it. One that is already
     // self-contained comes out byte for byte as it went in, duplicate
     // directives, odd quoting and all.
@@ -1781,9 +2181,7 @@ void Openvpn3WidgetTest::anUntouchedProfileIsNeverRewritten()
 
 void Openvpn3WidgetTest::aReimportKeepsAnUnsavedStorageChoice()
 {
-    if (!backendAvailable()) {
-        QSKIP("the openvpn3 backend's libnm plugin is not installed");
-    }
+    OPENVPN3_REQUIRE_BACKEND();
     // The choice was made and not saved yet; an import replaces the
     // configuration, and the policy is not part of the configuration.
     OpenVpn3SettingWidget widget(secretSetting(u"1"_s));

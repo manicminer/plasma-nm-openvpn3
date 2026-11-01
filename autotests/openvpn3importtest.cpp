@@ -8,10 +8,13 @@
 #include <sys/resource.h>
 
 #include <QDir>
+#include <QFileInfo>
+#include <QRegularExpression>
 #include <QTemporaryDir>
 #include <QTest>
 
 #include "nm-openvpn3-service.h"
+#include "openvpn3backendguard.h"
 #include "openvpn3importer.h"
 #include "openvpn3profile.h"
 #include "openvpn3storage.h"
@@ -36,35 +39,35 @@ class Openvpn3ImportTest : public QObject
 {
     Q_OBJECT
 
-private:
-    //! True when the openvpn3 backend's libnm plugin is available to libnm.
-    static bool backendAvailable();
-
 private Q_SLOTS:
     void init() { Openvpn3Storage::setSecretServiceAvailability(true); }
 
     void scopedCredentialsSurviveApply()
     {
+        // The backend's service requires a username, and asks for the
+        // password, for an auth-user-pass anywhere outside a payload -- a
+        // <connection> block included -- so the connection keeps them.
         const auto imported = Openvpn3Import::fromProfileText(u"client\n<connection>\nremote example.org\nauth-user-pass\n</connection>\n"_s, u"alice"_s, u"synthetic"_s);
-        NMStringMap data, secrets;
-        QVERIFY(Openvpn3Importer::apply(imported, data, secrets));
-        QCOMPARE(data.value(u"username"_s), u"alice"_s);
-        QCOMPARE(secrets.value(u"password"_s), u"synthetic"_s);
-    }
-    void realScopedImportPreservesCredentials()
-    {
-        // This one goes through the real importer, so it skips with the rest
-        // of them rather than failing where the backend is not installed.
-        if (!backendAvailable()) {
-            QSKIP("the openvpn3 backend's libnm plugin is not installed");
-        }
-        const auto imported = Openvpn3Importer::normalize(u"client\n<connection>\nremote example.org\n<auth-user-pass>\nalice\nsynthetic\n</auth-user-pass>\n</connection>\n"_s);
-        QVERIFY2(imported.isValid(), qPrintable(imported.errorMessage()));
         QVERIFY(imported.needsUserPass());
         NMStringMap data, secrets;
         QVERIFY(Openvpn3Importer::apply(imported, data, secrets));
         QCOMPARE(data.value(u"username"_s), u"alice"_s);
         QCOMPARE(secrets.value(u"password"_s), u"synthetic"_s);
+    }
+    void realScopedImportKeepsTheScopeAsWritten()
+    {
+        // The backend's import keeps a <connection> scope exactly as written:
+        // credentials in one are not lifted out (openvpn3 does not read them
+        // from a scope either), so they stay in the profile -- a secret like
+        // the rest of it -- and the editor reports them as a caveat. Pinned
+        // here so that the documented caveat cannot quietly stop being true.
+        OPENVPN3_REQUIRE_BACKEND();
+        const QString text = u"client\n<connection>\nremote example.org\n<auth-user-pass>\nalice\nsynthetic\n</auth-user-pass>\n</connection>\n"_s;
+        const auto imported = Openvpn3Importer::normalize(text);
+        QVERIFY2(imported.isValid(), qPrintable(imported.errorMessage()));
+        QCOMPARE(imported.profile(), text);
+        QVERIFY(imported.username().isEmpty());
+        QVERIFY(imported.password().isEmpty());
     }
 
     void normalizeRefusesAProfileItCouldNotWriteWhole();
@@ -83,7 +86,13 @@ private Q_SLOTS:
 
     void importInlinesEverythingTheProfileReferred();
     void importLiftsCredentialsOutOfTheProfile();
-    void importDropsTheFormattingTheFileHad();
+    void importKeepsTheFormattingTheFileHad();
+    void importInlinesEveryTopLevelFileKind();
+    void importLeavesConnectionBlocksAndOpaqueTextAlone();
+    void importOfAMissingReferencedFileFails();
+    void importNormalizesLineWhitespace();
+    void importRefusesBlockTagsTheBackendReadsDifferently_data();
+    void importRefusesBlockTagsTheBackendReadsDifferently();
     void importOfAMissingFileChangesNothing();
     void importedConnectionUsesTheSecretLayout();
     void importedCredentialsFollowTheProfileIntoTheWallet();
@@ -92,15 +101,15 @@ private Q_SLOTS:
     void normalizeEmbedsFilesAndLiftsCredentials();
     void normalizeLeavesASelfContainedProfileAlone();
     void normalizeRefusesWhatItCannotMakeSelfContained();
-    void normalizeKeepsWhatTheFrontendsCommentStrippingLeft();
+    void resolveSplicesOnlyTheEntriesThatNeedIt();
+    void resolveKeepsTheDocumentsLineTerminator();
+    void resolveWritesOneBareAuthUserPass();
+    void resolveAggregatesCredentialsLikeTheImport();
+    void resolveRefusesAMissingFileAndChangesNothing();
+    void resolveRefusesARelativePath();
+    void resolveLeavesASelfContainedProfileAlone();
     void normalizeLeavesNothingBehindOnDisk();
 };
-
-bool Openvpn3ImportTest::backendAvailable()
-{
-    static const bool available = Openvpn3Importer::fromFile(dataPath(u"office.ovpn"_s)).isValid();
-    return available;
-}
 
 // -- apply(): pure map surgery, no backend needed -----------------------------
 
@@ -112,8 +121,9 @@ void Openvpn3ImportTest::applyProducesTheWalletLayout()
 
     QVERIFY(Openvpn3Importer::apply(import, data, secrets));
 
-    QCOMPARE(data.value(u"profile-storage"_s), u"secret"_s);
+    QVERIFY(!data.contains(u"profile-storage"_s));
     QCOMPARE(data.value(u"profile-flags"_s), u"1"_s);
+    QCOMPARE(data.value(u"remote"_s), u"a.example.org"_s);
     QVERIFY(!data.contains(u"profile"_s));
     QCOMPARE(Openvpn3Storage::readProfile(data, secrets), import.profile());
     QCOMPARE(data.value(u"username"_s), u"alice"_s);
@@ -324,9 +334,7 @@ void Openvpn3ImportTest::shreddingOverwritesRatherThanTruncates()
 
 void Openvpn3ImportTest::importInlinesEverythingTheProfileReferred()
 {
-    if (!backendAvailable()) {
-        QSKIP("the openvpn3 backend's libnm plugin is not installed");
-    }
+    OPENVPN3_REQUIRE_BACKEND();
     const Openvpn3Import import = Openvpn3Importer::fromFile(dataPath(u"office.ovpn"_s));
     QVERIFY2(import.isValid(), qPrintable(import.errorMessage()));
 
@@ -345,9 +353,7 @@ void Openvpn3ImportTest::importInlinesEverythingTheProfileReferred()
 
 void Openvpn3ImportTest::importLiftsCredentialsOutOfTheProfile()
 {
-    if (!backendAvailable()) {
-        QSKIP("the openvpn3 backend's libnm plugin is not installed");
-    }
+    OPENVPN3_REQUIRE_BACKEND();
     const Openvpn3Import import = Openvpn3Importer::fromFile(dataPath(u"office.ovpn"_s));
     QVERIFY(import.isValid());
 
@@ -358,44 +364,235 @@ void Openvpn3ImportTest::importLiftsCredentialsOutOfTheProfile()
     QCOMPARE(import.suggestedId(), u"office"_s);
 }
 
-void Openvpn3ImportTest::importDropsTheFormattingTheFileHad()
+void Openvpn3ImportTest::importKeepsTheFormattingTheFileHad()
 {
-    if (!backendAvailable()) {
-        QSKIP("the openvpn3 backend's libnm plugin is not installed");
-    }
+    OPENVPN3_REQUIRE_BACKEND();
     // office.ovpn is a file as people write them: a banner at the top, a note
-    // on the failover entry, blank lines spacing the sections out.  openvpn3
-    // reads nothing from any of that, and the stored profile is not a file
-    // anybody opens again, so the backend's normalizer drops it and the editor
-    // has no rows it cannot act on.
+    // on the failover entry, blank lines spacing the sections out. The
+    // backend keeps all of it (docs/connection-format.md: "comments and blank
+    // lines included, is kept as written"), and so does this editor.
     const Openvpn3Import import = Openvpn3Importer::fromFile(dataPath(u"office.ovpn"_s));
     QVERIFY2(import.isValid(), qPrintable(import.errorMessage()));
 
+    QVERIFY(import.profile().startsWith(u"##\n# Synthetic test profile for example.org - not a real VPN.\n##\nclient\n"_s));
+    QVERIFY(import.profile().contains(u"\n\n; failover entry, kept verbatim by the editor\n<connection>\n"_s));
+    QVERIFY(import.profile().contains(u"<connection>\nremote fallback.example.org 1194 udp\nhttp-proxy proxy.example.org 8080\n</connection>\n"_s));
+
+    // The entries are the directives and blocks, in order; the formatting is
+    // carried by them rather than being entries of its own.
     const Openvpn3Profile profile = Openvpn3Profile::fromText(import.profile());
     for (const Openvpn3Entry &entry : profile.entries()) {
         QVERIFY(entry.isDirective() || entry.isBlock());
     }
-    QVERIFY(!import.profile().contains(u"Synthetic test profile"_s));
-    QVERIFY(!import.profile().contains(u"failover entry, kept verbatim"_s));
-    // The file has blank lines at the top level, inside and around its
-    // sections; none of them survives, and nothing is left before the first
-    // directive.
-    QVERIFY(!import.profile().contains(u"\n\n"_s));
-    QVERIFY(import.profile().startsWith(u"client\n"_s));
-    // The directives those comments sat among are all still there, in order.
+    QCOMPARE(profile.at(0).name, u"client"_s);
     QCOMPARE(profile.value(u"dev"_s), u"tun"_s);
-    QVERIFY(profile.blockBody(u"connection"_s).contains(u"remote fallback.example.org 1194 udp"_s));
     QCOMPARE(profile.arguments(u"some-directive-we-have-never-heard-of"_s), QStringList({u"1"_s, u"2"_s, u"3"_s}));
     QCOMPARE(profile.arguments(u"verify-x509-name"_s), QStringList({u"C=NO, O=Example Org, CN=vpn.example.org"_s, u"subject"_s}));
-    // Parsing what came back is a fixed point: nothing left to drop.
-    QCOMPARE(Openvpn3Profile::fromText(import.profile()).toText(), import.profile());
+    // Reading what came back and writing it out again changes nothing.
+    QCOMPARE(profile.toText(), import.profile());
+}
+
+namespace
+{
+/** Writes @p contents to @p name inside @p dir, creating directories. */
+bool writeFile(const QTemporaryDir &dir, const QString &name, const QByteArray &contents)
+{
+    const QString path = dir.filePath(name);
+    QDir().mkpath(QFileInfo(path).absolutePath());
+    QFile file(path);
+    return file.open(QIODevice::WriteOnly) && file.write(contents) == contents.size();
+}
+
+QByteArray readData(const QString &name)
+{
+    QFile file(dataPath(name));
+    return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray();
+}
+
+QStringList namesOf(const Openvpn3Profile &profile)
+{
+    QStringList names;
+    for (const Openvpn3Entry &entry : profile.entries()) {
+        names.append(entry.isBlock() ? u'<' + entry.name + u'>' : entry.name);
+    }
+    return names;
+}
+}
+
+void Openvpn3ImportTest::importInlinesEveryTopLevelFileKind()
+{
+    OPENVPN3_REQUIRE_BACKEND();
+    // Every reference the backend inlines at the top level, a quoted relative
+    // path with a space in it among them, against files that exist.
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QByteArray pkcs12("\x30\x82\x01\x00synthetic\x00\xff pkcs12 bytes", 26);
+    QVERIFY(writeFile(dir, u"my ca.crt"_s, readData(u"pki/ca.crt"_s)));
+    QVERIFY(writeFile(dir, u"pki/client.crt"_s, readData(u"pki/client.crt"_s)));
+    QVERIFY(writeFile(dir, u"pki/client.key"_s, readData(u"pki/client.key"_s)));
+    QVERIFY(writeFile(dir, u"pki/ta.key"_s, readData(u"pki/ta.key"_s)));
+    QVERIFY(writeFile(dir, u"extra.crt"_s, "-----BEGIN CERTIFICATE-----\nEXTRA\n-----END CERTIFICATE-----\n"));
+    QVERIFY(writeFile(dir, u"tc.key"_s, "-----BEGIN OpenVPN Static key V1-----\nTLSCRYPT\n-----END OpenVPN Static key V1-----\n"));
+    QVERIFY(writeFile(dir, u"tc2.key"_s, "-----BEGIN OpenVPN tls-crypt-v2 client key-----\nTLSCRYPTV2\n-----END OpenVPN tls-crypt-v2 client key-----\n"));
+    QVERIFY(writeFile(dir, u"crl.pem"_s, "-----BEGIN X509 CRL-----\nCRL\n-----END X509 CRL-----"));
+    QVERIFY(writeFile(dir, u"client.p12"_s, pkcs12));
+    QVERIFY(writeFile(dir, u"creds.txt"_s, "carol\ns3cret\n"));
+    QVERIFY(writeFile(dir,
+                      u"all.ovpn"_s,
+                      "client\n"
+                      "remote vpn.example.org 1194 udp\n"
+                      "ca \"my ca.crt\"\n"
+                      "cert pki/client.crt\n"
+                      "key pki/client.key\n"
+                      "extra-certs extra.crt\n"
+                      "tls-auth pki/ta.key 1\n"
+                      "tls-crypt tc.key\n"
+                      "tls-crypt-v2 tc2.key\n"
+                      "crl-verify crl.pem\n"
+                      "crl-verify crls dir\n"
+                      "pkcs12 client.p12\n"
+                      "auth-user-pass creds.txt\n"
+                      "setenv dup 1\n"
+                      "setenv dup 2\n"
+                      "unknown-option a b\n"));
+
+    const Openvpn3Import import = Openvpn3Importer::fromFile(dir.filePath(u"all.ovpn"_s));
+    QVERIFY2(import.isValid(), qPrintable(import.errorMessage()));
+    const Openvpn3Profile profile = Openvpn3Profile::fromText(import.profile());
+
+    // In place, in order, nothing hoisted or reordered; tls-auth's direction
+    // becomes key-direction right behind its block; a CRL directory is a
+    // directory, which stays a reference.
+    QCOMPARE(namesOf(profile),
+             QStringList({u"client"_s, u"remote"_s, u"<ca>"_s, u"<cert>"_s, u"<key>"_s, u"<extra-certs>"_s, u"<tls-auth>"_s, u"key-direction"_s,
+                          u"<tls-crypt>"_s, u"<tls-crypt-v2>"_s, u"<crl-verify>"_s, u"crl-verify"_s, u"<pkcs12>"_s, u"auth-user-pass"_s,
+                          u"setenv"_s, u"setenv"_s, u"unknown-option"_s}));
+    QCOMPARE(profile.blockBody(u"ca"_s), QString::fromUtf8(readData(u"pki/ca.crt"_s)));
+    QCOMPARE(profile.blockBody(u"extra-certs"_s), u"-----BEGIN CERTIFICATE-----\nEXTRA\n-----END CERTIFICATE-----\n"_s);
+    QVERIFY(profile.blockBody(u"tls-crypt-v2"_s).contains(u"TLSCRYPTV2"_s));
+    // A file with no final newline still makes a well-formed block.
+    QCOMPARE(profile.blockBody(u"crl-verify"_s), u"-----BEGIN X509 CRL-----\nCRL\n-----END X509 CRL-----\n"_s);
+    QCOMPARE(profile.value(u"key-direction"_s), u"1"_s);
+    QCOMPARE(profile.at(profile.indexesOf(u"crl-verify"_s).last()).arguments, QStringList({u"crls"_s, u"dir"_s}));
+    // A PKCS#12 bundle is binary, so it goes in as base64 and its passphrase
+    // is asked for.
+    QCOMPARE(profile.blockBody(u"pkcs12"_s).remove(u'\n'), QString::fromLatin1(pkcs12.toBase64()));
+    QVERIFY(import.needsCertPass());
+    // The credentials file's contents move to the connection; openvpn3 is
+    // still told to ask.
+    QCOMPARE(import.username(), u"carol"_s);
+    QCOMPARE(import.password(), u"s3cret"_s);
+    QVERIFY(import.needsUserPass());
+    QVERIFY(!import.profile().contains(u"s3cret"_s));
+    QVERIFY(!import.profile().contains(u"creds.txt"_s));
+}
+
+void Openvpn3ImportTest::importLeavesConnectionBlocksAndOpaqueTextAlone()
+{
+    OPENVPN3_REQUIRE_BACKEND();
+    // Text that reads like a file reference and is not one: a comment, the
+    // payload of an unknown block, and a reference inside a <connection>
+    // scope, which the backend keeps exactly as written and openvpn3 does
+    // not read. None of the files exist, and the import still succeeds:
+    // nothing went looking for them.
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QByteArray text =
+        "client\n"
+        "# ca commented-out.crt\n"
+        "<x-notes>\n"
+        "ca not-a-reference.crt\n"
+        "</x-notes>\n"
+        "<connection>\n"
+        "remote fallback.example.org 443 tcp\n"
+        "ca scoped-missing.crt\n"
+        "</connection>\n"
+        "remote vpn.example.org";
+    QVERIFY(writeFile(dir, u"opaque.ovpn"_s, text));
+
+    const Openvpn3Import import = Openvpn3Importer::fromFile(dir.filePath(u"opaque.ovpn"_s));
+    QVERIFY2(import.isValid(), qPrintable(import.errorMessage()));
+    // Byte for byte but for the final newline the backend writes.
+    QCOMPARE(import.profile(), QString::fromUtf8(text) + u'\n');
+}
+
+void Openvpn3ImportTest::importOfAMissingReferencedFileFails()
+{
+    OPENVPN3_REQUIRE_BACKEND();
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    QVERIFY(writeFile(dir, u"missing.ovpn"_s, "client\nremote vpn.example.org\nca missing-ca.crt\n"));
+
+    const Openvpn3Import import = Openvpn3Importer::fromFile(dir.filePath(u"missing.ovpn"_s));
+    QVERIFY(!import.isValid());
+    QVERIFY2(import.errorMessage().contains(u"missing-ca.crt"_s), qPrintable(import.errorMessage()));
+}
+
+void Openvpn3ImportTest::importRefusesBlockTagsTheBackendReadsDifferently_data()
+{
+    QTest::addColumn<QByteArray>("text");
+    QTest::newRow("commented connection opener")
+        << QByteArray("client\n<connection> # primary\nremote vpn.example.org\n<auth-user-pass>\nalice\npassword\n</auth-user-pass>\n</connection>\n");
+    QTest::newRow("quoted connection opener") << QByteArray("client\n\"<connection>\"\nremote vpn.example.org\nca ca.crt\n</connection>\n");
+    QTest::newRow("indented closer in a payload") << QByteArray("client\nremote vpn.example.org\n<x-notes>\n </x-notes>\nca ca.crt\n</x-notes>\n");
+}
+
+void Openvpn3ImportTest::importRefusesBlockTagsTheBackendReadsDifferently()
+{
+    OPENVPN3_REQUIRE_BACKEND();
+    // openvpn3 reads these as a scope or a payload; the backend's importer,
+    // which matches the literal stripped line, does not, and would inline the
+    // file or lift the credentials out of it. Refused, on both import paths,
+    // rather than silently hoisted -- even with the file right there.
+    QFETCH(QByteArray, text);
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    QVERIFY(writeFile(dir, u"ca.crt"_s, readData(u"pki/ca.crt"_s)));
+    QVERIFY(writeFile(dir, u"odd.ovpn"_s, text));
+
+    const Openvpn3Import import = Openvpn3Importer::fromFile(dir.filePath(u"odd.ovpn"_s));
+    QVERIFY(!import.isValid());
+    QVERIFY2(import.errorMessage().contains(u"line of its own"_s), qPrintable(import.errorMessage()));
+
+    QString error;
+    NMConnection *connection = Openvpn3Importer::importConnection(dir.filePath(u"odd.ovpn"_s), NetworkManager::Setting::None, &error);
+    QVERIFY(!connection);
+    QVERIFY2(error.contains(u"line of its own"_s), qPrintable(error));
+}
+
+void Openvpn3ImportTest::importNormalizesLineWhitespace()
+{
+    OPENVPN3_REQUIRE_BACKEND();
+    // What the backend's import does to text, pinned so that the documented
+    // caveat stays true: every line outside a payload is stripped at both
+    // ends -- an escaped trailing space included -- a payload line loses its
+    // trailing whitespace, and a comment after a reference it inlines is
+    // gone with the reference. This is the import's contract, not something
+    // the editor does to a document it already holds.
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    QVERIFY(writeFile(dir, u"ca.crt"_s, readData(u"pki/ca.crt"_s)));
+    QVERIFY(writeFile(dir,
+                      u"ws.ovpn"_s,
+                      "client\n"
+                      "  remote vpn.example.org   \n"
+                      "setenv a value\\ \n"
+                      "ca ca.crt # company CA\n"
+                      "<x-blob>\n"
+                      "payload   \n"
+                      "</x-blob>\n"));
+
+    const Openvpn3Import import = Openvpn3Importer::fromFile(dir.filePath(u"ws.ovpn"_s));
+    QVERIFY2(import.isValid(), qPrintable(import.errorMessage()));
+    QVERIFY(import.profile().contains(u"\nremote vpn.example.org\n"_s));
+    QVERIFY(import.profile().contains(u"\nsetenv a value\\\n"_s));
+    QVERIFY(!import.profile().contains(u"company CA"_s));
+    QVERIFY(import.profile().contains(u"<x-blob>\npayload\n</x-blob>\n"_s));
 }
 
 void Openvpn3ImportTest::importOfAMissingFileChangesNothing()
 {
-    if (!backendAvailable()) {
-        QSKIP("the openvpn3 backend's libnm plugin is not installed");
-    }
+    OPENVPN3_REQUIRE_BACKEND();
     QTemporaryDir dir;
     const Openvpn3Import import = Openvpn3Importer::fromFile(dir.filePath(u"nowhere.ovpn"_s));
 
@@ -412,9 +609,7 @@ void Openvpn3ImportTest::importOfAMissingFileChangesNothing()
 
 void Openvpn3ImportTest::importedConnectionUsesTheSecretLayout()
 {
-    if (!backendAvailable()) {
-        QSKIP("the openvpn3 backend's libnm plugin is not installed");
-    }
+    OPENVPN3_REQUIRE_BACKEND();
     QString error;
     NMConnection *connection = Openvpn3Importer::importConnection(dataPath(u"office.ovpn"_s), NetworkManager::Setting::AgentOwned, &error);
     QVERIFY2(connection, qPrintable(error));
@@ -423,18 +618,24 @@ void Openvpn3ImportTest::importedConnectionUsesTheSecretLayout()
     QVERIFY(s_vpn);
     QCOMPARE(QString::fromUtf8(nm_setting_vpn_get_service_type(s_vpn)), QLatin1String(NM_DBUS_SERVICE_OPENVPN3));
     QVERIFY(!nm_setting_vpn_get_data_item(s_vpn, "profile"));
-    QCOMPARE(QString::fromUtf8(nm_setting_vpn_get_data_item(s_vpn, "profile-storage")), u"secret"_s);
+    // The backend's layout: the flags are the only marker.
+    QVERIFY(!nm_setting_vpn_get_data_item(s_vpn, "profile-storage"));
     QCOMPARE(QString::fromUtf8(nm_setting_vpn_get_data_item(s_vpn, "profile-flags")), u"1"_s);
+    QCOMPARE(QString::fromUtf8(nm_setting_vpn_get_data_item(s_vpn, "remote")), u"vpn1.example.org"_s);
     QVERIFY(nm_setting_vpn_get_secret(s_vpn, "profile"));
+    // And it is still the profile the backend imported, comments and all.
+    NMStringMap data;
+    NMStringMap secrets;
+    data.insert(u"profile-flags"_s, u"1"_s);
+    secrets.insert(u"profile"_s, QString::fromUtf8(nm_setting_vpn_get_secret(s_vpn, "profile")));
+    QVERIFY(Openvpn3Storage::readProfile(data, secrets).contains(u"; failover entry, kept verbatim by the editor\n"_s));
 
     g_object_unref(connection);
 }
 
 void Openvpn3ImportTest::importedCredentialsFollowTheProfileIntoTheWallet()
 {
-    if (!backendAvailable()) {
-        QSKIP("the openvpn3 backend's libnm plugin is not installed");
-    }
+    OPENVPN3_REQUIRE_BACKEND();
     QString error;
     NMConnection *connection = Openvpn3Importer::importConnection(dataPath(u"office.ovpn"_s), NetworkManager::Setting::AgentOwned, &error);
     QVERIFY2(connection, qPrintable(error));
@@ -458,9 +659,7 @@ void Openvpn3ImportTest::importedCredentialsFollowTheProfileIntoTheWallet()
 
 void Openvpn3ImportTest::importedCredentialsCanBeAskedForBySystemStorage()
 {
-    if (!backendAvailable()) {
-        QSKIP("the openvpn3 backend's libnm plugin is not installed");
-    }
+    OPENVPN3_REQUIRE_BACKEND();
     QString error;
     NMConnection *connection = Openvpn3Importer::importConnection(dataPath(u"office.ovpn"_s), NetworkManager::Setting::None, &error);
     QVERIFY2(connection, qPrintable(error));
@@ -476,9 +675,7 @@ void Openvpn3ImportTest::importedCredentialsCanBeAskedForBySystemStorage()
 
 void Openvpn3ImportTest::normalizeEmbedsFilesAndLiftsCredentials()
 {
-    if (!backendAvailable()) {
-        QSKIP("the openvpn3 backend's libnm plugin is not installed");
-    }
+    OPENVPN3_REQUIRE_BACKEND();
     // What someone typing into the Profile Source page would produce: a file
     // reference and a password in the document itself.
     const QString typed = u"client\nremote a.example.org 1194 udp\nca "_s + dataPath(u"pki/ca.crt"_s)
@@ -501,9 +698,7 @@ void Openvpn3ImportTest::normalizeEmbedsFilesAndLiftsCredentials()
 
 void Openvpn3ImportTest::normalizeLeavesASelfContainedProfileAlone()
 {
-    if (!backendAvailable()) {
-        QSKIP("the openvpn3 backend's libnm plugin is not installed");
-    }
+    OPENVPN3_REQUIRE_BACKEND();
     const auto selfContained = u"client\nremote a.example.org 1194 udp\n<ca>\nPEM\n</ca>\nsome-directive 1 2 3\n"_s;
 
     const Openvpn3Import result = Openvpn3Importer::normalize(selfContained);
@@ -513,9 +708,7 @@ void Openvpn3ImportTest::normalizeLeavesASelfContainedProfileAlone()
 
 void Openvpn3ImportTest::normalizeRefusesWhatItCannotMakeSelfContained()
 {
-    if (!backendAvailable()) {
-        QSKIP("the openvpn3 backend's libnm plugin is not installed");
-    }
+    OPENVPN3_REQUIRE_BACKEND();
     const Openvpn3Import result = Openvpn3Importer::normalize(u"client\nremote a.example.org\nca /nonexistent/nowhere.crt\n"_s);
 
     QVERIFY(!result.isValid());
@@ -523,39 +716,130 @@ void Openvpn3ImportTest::normalizeRefusesWhatItCannotMakeSelfContained()
     QVERIFY(result.profile().isEmpty());
 }
 
-void Openvpn3ImportTest::normalizeKeepsWhatTheFrontendsCommentStrippingLeft()
-{
-    if (!backendAvailable()) {
-        QSKIP("the openvpn3 backend's libnm plugin is not installed");
-    }
-    // The two comment strippers run one after the other whenever an edited
-    // profile still refers to a file: this class drops the comments as the
-    // document is parsed, and the backend drops them again while it inlines.
-    // What the first pass deliberately kept the second must not take -- the
-    // escaped trailing space is the value, and Unicode whitespace is a
-    // literal byte of it.
-    const QString typed = u"client\nremote a.example.org 1194 udp\nca "_s + dataPath(u"pki/ca.crt"_s)
-        + u"\nsetenv a value\\  # note\nsetenv b value  ; note\n"_s;
-    const QString stripped = Openvpn3Profile::fromText(typed).toText();
-    QVERIFY(stripped.contains(u"setenv a value\\ \n"_s));
-    QVERIFY(stripped.contains(u"setenv b value \n"_s));
+// -- resolving the references of a document the editor holds ----------------
 
-    const Openvpn3Import result = Openvpn3Importer::normalize(stripped);
+void Openvpn3ImportTest::resolveSplicesOnlyTheEntriesThatNeedIt()
+{
+    OPENVPN3_REQUIRE_BACKEND();
+    // A document typed or edited here. Only the reference and the inline
+    // credentials go through the backend, one entry at a time; everything
+    // around them -- the formatting, an escaped trailing space the backend
+    // would strip, a scope it would leave alone anyway -- is not its to
+    // touch, and comes back byte for byte.
+    const QString ca = dataPath(u"pki/ca.crt"_s);
+    const QString head = u"# typed here\nclient\nremote a.example.org 1194 udp   # primary\n  setenv a value\\  # escaped space\n"_s;
+    const QString tail = u"\n<connection>\nremote b.example.org\nca scoped.crt\n</connection>\n"_s;
+    const QString typed = head + u"ca "_s + ca + u"   # company CA\n"_s + tail + u"<auth-user-pass>\nbob\nhunter2\n</auth-user-pass>\ndev tun"_s;
+
+    const Openvpn3Import result = Openvpn3Importer::resolveReferences(Openvpn3Profile::fromText(typed));
     QVERIFY2(result.isValid(), qPrintable(result.errorMessage()));
 
-    QVERIFY(result.profile().contains(u"setenv a value\\ \n"_s));
-    QVERIFY(!result.profile().contains(u"setenv a value\\\n"_s));
-    QVERIFY(result.profile().contains(u"setenv b value \n"_s));
-    // And normalizing again is a fixed point, as is parsing what came back.
-    QCOMPARE(Openvpn3Importer::normalize(result.profile()).profile(), result.profile());
-    QCOMPARE(Openvpn3Profile::fromText(result.profile()).toText(), result.profile());
+    const QString expected = head + u"# company CA\n<ca>\n"_s + QString::fromUtf8(readData(u"pki/ca.crt"_s)) + u"</ca>\n"_s + tail
+        + u"auth-user-pass\ndev tun"_s;
+    QCOMPARE(result.profile(), expected);
+    QCOMPARE(result.username(), u"bob"_s);
+    QCOMPARE(result.password(), u"hunter2"_s);
+    QVERIFY(result.needsUserPass());
+}
+
+void Openvpn3ImportTest::resolveKeepsTheDocumentsLineTerminator()
+{
+    OPENVPN3_REQUIRE_BACKEND();
+    // Both an LF file and a CRLF one come out with CRLF lines, and nothing
+    // gets a second carriage return.
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    QVERIFY(writeFile(dir, u"crlf.crt"_s, "-----BEGIN CERTIFICATE-----\r\nCRLF\r\n-----END CERTIFICATE-----\r\n"));
+    const QString typed = u"client\r\nremote a.example.org\r\nca "_s + dataPath(u"pki/ca.crt"_s) + u"\r\ncert "_s + dir.filePath(u"crlf.crt"_s) + u"\r\n"_s;
+
+    const Openvpn3Import result = Openvpn3Importer::resolveReferences(Openvpn3Profile::fromText(typed));
+    QVERIFY2(result.isValid(), qPrintable(result.errorMessage()));
+    QVERIFY(result.profile().startsWith(u"client\r\nremote a.example.org\r\n<ca>\r\n"_s));
+    QVERIFY(result.profile().endsWith(u"<cert>\r\n-----BEGIN CERTIFICATE-----\r\nCRLF\r\n-----END CERTIFICATE-----\r\n</cert>\r\n"_s));
+    QVERIFY(!result.profile().contains(QRegularExpression(u"[^\r]\n"_s)));
+    QVERIFY(!result.profile().contains(u"\r\r"_s));
+}
+
+void Openvpn3ImportTest::resolveWritesOneBareAuthUserPass()
+{
+    OPENVPN3_REQUIRE_BACKEND();
+    // The backend writes the directive once whatever the credentials came
+    // in as; a second one, from the inline block, is not added next to it.
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    QVERIFY(writeFile(dir, u"creds.txt"_s, "carol\nfile-pw\n"));
+    const Openvpn3Import result = Openvpn3Importer::resolveReferences(Openvpn3Profile::fromText(
+        u"client\nremote a.example.org\nauth-user-pass\n# creds\n<auth-user-pass>\nbob\npw\n</auth-user-pass>\nverb 3\nauth-user-pass "_s
+        + dir.filePath(u"creds.txt"_s) + u" # account note\n"_s));
+    QVERIFY2(result.isValid(), qPrintable(result.errorMessage()));
+    // The comment on a collapsed source stays, as a line of its own.
+    QCOMPARE(result.profile(), u"client\nremote a.example.org\nauth-user-pass\n# creds\nverb 3\n# account note\n"_s);
+    QCOMPARE(result.username(), u"carol"_s);
+    QCOMPARE(result.password(), u"file-pw"_s);
+}
+
+void Openvpn3ImportTest::resolveAggregatesCredentialsLikeTheImport()
+{
+    OPENVPN3_REQUIRE_BACKEND();
+    // Two credential sources: the backend keeps a username or password from
+    // an earlier one when a later one has none. Resolving the same document
+    // entry by entry has to come out the same as importing it whole.
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    QVERIFY(writeFile(dir, u"first.txt"_s, "alice\nsecret\n"));
+    QVERIFY(writeFile(dir, u"second.txt"_s, "bob\n\n"));
+    const QString text = u"client\nremote a.example.org\nauth-user-pass "_s + dir.filePath(u"first.txt"_s) + u"\nauth-user-pass "_s
+        + dir.filePath(u"second.txt"_s) + u"\n"_s;
+    QVERIFY(writeFile(dir, u"two.ovpn"_s, text.toUtf8()));
+
+    const Openvpn3Import whole = Openvpn3Importer::fromFile(dir.filePath(u"two.ovpn"_s));
+    QVERIFY2(whole.isValid(), qPrintable(whole.errorMessage()));
+    const Openvpn3Import resolved = Openvpn3Importer::resolveReferences(Openvpn3Profile::fromText(text));
+    QVERIFY2(resolved.isValid(), qPrintable(resolved.errorMessage()));
+    QCOMPARE(resolved.username(), whole.username());
+    QCOMPARE(resolved.password(), whole.password());
+    QCOMPARE(resolved.username(), u"bob"_s);
+    QCOMPARE(resolved.password(), u"secret"_s);
+}
+
+void Openvpn3ImportTest::resolveRefusesAMissingFileAndChangesNothing()
+{
+    OPENVPN3_REQUIRE_BACKEND();
+    const Openvpn3Import result =
+        Openvpn3Importer::resolveReferences(Openvpn3Profile::fromText(u"client\nremote a.example.org\nca /nonexistent/nowhere.crt\n"_s));
+
+    QVERIFY(!result.isValid());
+    QVERIFY2(result.errorMessage().contains(u"/nonexistent/nowhere.crt"_s), qPrintable(result.errorMessage()));
+    QVERIFY(result.profile().isEmpty());
+}
+
+void Openvpn3ImportTest::resolveRefusesARelativePath()
+{
+    // A document held here has no directory a relative path could be read
+    // against; the backend would resolve it against a temporary directory and
+    // report a path the user never wrote. Say what is wrong instead. This
+    // needs no backend: nothing is read.
+    const Openvpn3Import result = Openvpn3Importer::resolveReferences(Openvpn3Profile::fromText(u"client\nremote a.example.org\ncert pki/client.crt\n"_s));
+
+    QVERIFY(!result.isValid());
+    QVERIFY2(result.errorMessage().contains(u"pki/client.crt"_s), qPrintable(result.errorMessage()));
+    QVERIFY2(result.errorMessage().contains(u"relative"_s), qPrintable(result.errorMessage()));
+}
+
+void Openvpn3ImportTest::resolveLeavesASelfContainedProfileAlone()
+{
+    // Nothing to resolve, so nothing is asked of the backend and the text is
+    // exactly what was given -- including what an import would normalize.
+    const QString text = u"# note\nclient\n  remote a.example.org   ; trailing\n<connection>\nremote b.example.org\nca scoped.crt\n</connection>\n<x>\n  payload  \n</x>"_s;
+
+    const Openvpn3Import result = Openvpn3Importer::resolveReferences(Openvpn3Profile::fromText(text));
+    QVERIFY2(result.isValid(), qPrintable(result.errorMessage()));
+    QCOMPARE(result.profile(), text);
 }
 
 void Openvpn3ImportTest::normalizeLeavesNothingBehindOnDisk()
 {
-    if (!backendAvailable()) {
-        QSKIP("the openvpn3 backend's libnm plugin is not installed");
-    }
+    OPENVPN3_REQUIRE_BACKEND();
     const QStringList before = QDir(QDir::tempPath()).entryList(QDir::AllEntries | QDir::NoDotAndDotDot);
 
     const Openvpn3Import result = Openvpn3Importer::normalize(u"client\nremote a.example.org\n<auth-user-pass>\nbob\nhunter2\n</auth-user-pass>\n"_s);

@@ -152,8 +152,8 @@ void OpenVpn3AuthWidget::readSecrets()
     }
 
     const Openvpn3Profile profile = Openvpn3Profile::fromText(Openvpn3Storage::readProfile(data, secrets));
-    // What openvpn3 reads, which includes the options inside a <connection>
-    // block: a profile may ask for a username and password in there.
+    // What the backend's service asks for, which counts an auth-user-pass
+    // inside a <connection> block too (ovpn.needs_user_pass).
     const bool wantsPassword = profile.containsOption(QStringLiteral("auth-user-pass"));
     const bool wantsPassphrase = profile.mayNeedPrivateKeyPassphrase();
 
@@ -198,8 +198,33 @@ QString OpenVpn3AuthWidget::unavailableProfileMessage(Openvpn3Storage::Availabil
     return QString();
 }
 
+bool OpenVpn3AuthWidget::layoutIsUnreadable() const
+{
+    // Decided by the data alone, so it holds for a hinted retry too, which
+    // arrives without the profile: these connections name a storage layout
+    // this version does not know, or flags no profile is stored with.
+    const NMStringMap data = d->setting ? d->setting->data() : NMStringMap();
+    const auto availability = Openvpn3Storage::availability(data, {});
+    return availability == Openvpn3Storage::Availability::Unsupported || availability == Openvpn3Storage::Availability::UnusableFlags;
+}
+
+bool OpenVpn3AuthWidget::isValid() const
+{
+    return !layoutIsUnreadable();
+}
+
 QVariantMap OpenVpn3AuthWidget::setting() const
 {
+    if (layoutIsUnreadable()) {
+        // plasma-nm's password dialog takes this answer whatever isValid()
+        // says, so this is where the refusal has to be: no profile, no
+        // secrets, and the activation fails for want of them rather than
+        // going ahead on a layout nobody here could vouch for.
+        QVariantMap result;
+        result.insert(QStringLiteral("secrets"), QVariant::fromValue<NMStringMap>(NMStringMap()));
+        return result;
+    }
+
     // Start from everything the connection already carries. The secret agent
     // replaces the whole vpn setting with what this returns, so a secret left
     // out here is a secret NetworkManager will not have -- and for an

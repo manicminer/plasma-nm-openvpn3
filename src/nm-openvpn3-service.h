@@ -10,10 +10,16 @@
 #define NM_DBUS_SERVICE_OPENVPN3 "org.freedesktop.NetworkManager.openvpn3"
 
 /* The whole profile, base64-encoded.  Either a public data item (legacy) or
- * one of the connection's secrets; see openvpn3storage.h. */
+ * one of the connection's secrets; see openvpn3storage.h and the backend's
+ * docs/connection-format.md. */
 #define NM_OPENVPN3_KEY_PROFILE "profile"
+#define NM_OPENVPN3_KEY_PROFILE_FLAGS "profile-flags"
+/* The marker of the secret layout as it was proposed before the backend's
+ * 0.2.0 settled on the flags alone: read, never written. */
 #define NM_OPENVPN3_KEY_PROFILE_STORAGE "profile-storage"
 #define NM_OPENVPN3_PROFILE_STORAGE_SECRET "secret"
+/* First remote host of the profile, for display only. */
+#define NM_OPENVPN3_KEY_REMOTE "remote"
 
 #define NM_OPENVPN3_KEY_USERNAME "username"
 #define NM_OPENVPN3_KEY_PASSWORD "password"

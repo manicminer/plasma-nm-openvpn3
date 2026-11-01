@@ -1,0 +1,28 @@
+# Conformance checks this editor fails on purpose, with
+# OPENVPN3_DRIVER_STORAGE=system (the user chose storage for all users before
+# importing). run.sh conformance deselects exactly these and nothing else, so
+# any other failure fails the run. Each is a policy of this editor that the
+# bare core does not have; docs/verification.md explains them.
+#
+# The editor refuses to save a profile that asks for a username and password
+# while no username is set, so the driver cannot load these without one.
+test_frontend.py::test_load_gives_the_core_connection[userpass-agent]
+test_frontend.py::test_load_gives_the_core_connection[static-challenge]
+test_frontend.py::test_load_gives_the_core_connection[comments]
+test_frontend.py::test_loaded_connection_conforms[userpass-agent]
+test_frontend.py::test_loaded_connection_conforms[static-challenge]
+test_frontend.py::test_loaded_connection_conforms[comments]
+test_frontend.py::test_loaded_connection_connects[userpass-agent]
+test_frontend.py::test_loaded_connection_connects[static-challenge]
+test_frontend.py::test_loaded_connection_connects[comments]
+# A password the profile carried is stored the way the password field says,
+# which defaults to the user's wallet (password-flags=1); the core keeps it
+# system-owned (0).
+test_frontend.py::test_load_gives_the_core_connection[userpass-inline]
+# A connection in the old public layout keeps it when saved unchanged; moving
+# it is the user's choice on the editor page.
+test_frontend.py::test_saving_unchanged_keeps_everything[legacy-userpass]
+# The secrets prompt hands back every secret the connection carries, because
+# plasma-nm's agent replaces the whole vpn setting with the answer.
+test_frontend.py::test_agent_answers_what_the_service_asks[hints1]
+test_frontend.py::test_agent_answers_what_the_service_asks[hints2]

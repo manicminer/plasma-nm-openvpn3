@@ -19,8 +19,9 @@ jobs:
   build:
     uses: ./.github/workflows/build.yml
     with:
-      backend-repository: ${{ vars.BACKEND_REPOSITORY }}
-      backend-ref: ${{ vars.BACKEND_REF }}
+      # The same pinned upstream backend as ci.yml; see docs/backend.md.
+      backend-repository: AlexeySetevoi/network-manager-openvpn3
+      backend-ref: 6f9dd3d527ff3e3ae5a6098df1be675f93ce34c5
       artifact-retention-days: 90
 
   publish:

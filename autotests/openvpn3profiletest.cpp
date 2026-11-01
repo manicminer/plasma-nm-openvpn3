@@ -49,10 +49,11 @@ const auto kRich = QStringLiteral(
     "key-direction 1\n"
     "some-directive-we-have-never-heard-of 1 2 3\n");
 
-/** kRich as this class keeps it: the formatting -- the comments and the blank
- * lines -- is gone and nothing else is. Order and duplicates stay, quoting
- * stays, and the lines of the opaque @c <ca> payload, the blank one included,
- * are untouched. */
+/** kRich as openvpn3 reads it, Openvpn3Profile::optionsText(): the formatting
+ * -- the comments and the blank lines -- left out and nothing else. Order and
+ * duplicates stay, quoting stays, and the lines of the opaque @c <ca> payload,
+ * the blank one included, are untouched. The document itself keeps all of it;
+ * this is only what its entries say. */
 const auto kRichKept = QStringLiteral(
     "client\n"
     "dev tun\n"
@@ -110,16 +111,28 @@ private Q_SLOTS:
         }
     }
 
-    void roundTripKeepsEverythingButFormatting_data();
-    void roundTripKeepsEverythingButFormatting();
-    void commentsAreDropped_data();
-    void commentsAreDropped();
-    void blankLinesAreDropped_data();
-    void blankLinesAreDropped();
+    void roundTripIsLossless_data();
+    void roundTripIsLossless();
+    void commentsAreFormatting_data();
+    void commentsAreFormatting();
+    void blankLinesAreFormatting_data();
+    void blankLinesAreFormatting();
     void noEntryIsEverFormatting();
-    void aScopeBodyNeverTakesAComment();
-    void aScopeBodyNeverTakesABlankLine();
-    void noMutatorCanPutABlankLineBack();
+    void aScopeBodyKeepsItsComments();
+    void aScopeBodyKeepsItsBlankLines();
+    void mutatorsKeepTheFormatting();
+    void editingADirectiveKeepsItsComment();
+    void removingAnEntryKeepsTheFormattingAroundIt();
+    void movingAnEntryTakesItsCommentsAndLeavesItsPlace();
+    void insertingGoesInFrontOfTheNextEntrysComments();
+    void appendingGoesInFrontOfTheTrailingFormatting();
+    void replacingAnEntryKeepsItsComment();
+    void editsKeepTheDocumentsLineEndings();
+    void connectionCaveats();
+    void blockBoundariesFollowOpenvpn3();
+    void blockTagsTheImporterReadsDifferentlyAreFound_data();
+    void blockTagsTheImporterReadsDifferentlyAreFound();
+    void connectionBlockCostFollowsOpenvpn3();
     void aMalformedCloserNeverBecomesAScopeBoundary();
     void parsesEntryKinds();
     void keepsDuplicatesInOrder();
@@ -130,6 +143,7 @@ private Q_SLOTS:
     void anEscapedSeparatorIsPartOfItsValue();
     void anEscapedTrailingSeparatorIsPartOfItsValue_data();
     void anEscapedTrailingSeparatorIsPartOfItsValue();
+    void editingALineKeepsWhatOpenvpn3ReadsFromTheRestOfIt();
     void untouchedEntriesKeepTheirQuoting();
     void editingOneEntryLeavesTheOthersAlone();
     void editingKeepsArgumentsItWasNotToldAbout();
@@ -158,7 +172,7 @@ private Q_SLOTS:
     void crlfIsVisibleAsTheDocumentsConvention();
 };
 
-void Openvpn3ProfileTest::roundTripKeepsEverythingButFormatting_data()
+void Openvpn3ProfileTest::roundTripIsLossless_data()
 {
     QTest::addColumn<QString>("text");
     QTest::addColumn<QString>("expected");
@@ -173,8 +187,7 @@ void Openvpn3ProfileTest::roundTripKeepsEverythingButFormatting_data()
     QTest::newRow("odd whitespace") << u"  client   \n\t remote   a.example.net    1194  \n\n\n"_s
                                     << u"  client   \n\t remote   a.example.net    1194  \n"_s;
     QTest::newRow("block without trailing newline") << u"client\n<ca>\nPEM\n</ca>"_s << u"client\n<ca>\nPEM\n</ca>"_s;
-    // Nothing but formatting is nothing at all, and an empty document is one
-    // this class can hand back.
+    // Nothing but formatting has no options at all, and is still a document.
     QTest::newRow("only comments") << u"# one\n; two\n"_s << QString();
     QTest::newRow("only comments, crlf") << u"# one\r\n; two\r\n"_s << QString();
     QTest::newRow("only blank lines") << u"\n\n   \n\t\n"_s << QString();
@@ -182,18 +195,21 @@ void Openvpn3ProfileTest::roundTripKeepsEverythingButFormatting_data()
     QTest::newRow("only formatting") << u"\n# one\n\n; two\n   \n"_s << QString();
 }
 
-void Openvpn3ProfileTest::roundTripKeepsEverythingButFormatting()
+void Openvpn3ProfileTest::roundTripIsLossless()
 {
     QFETCH(QString, text);
     QFETCH(QString, expected);
 
+    // The document is the document, byte for byte.
     const Openvpn3Profile profile = Openvpn3Profile::fromText(text);
-    QCOMPARE(profile.toText(), expected);
-    // And doing it again changes nothing more.
-    QCOMPARE(Openvpn3Profile::fromText(profile.toText()).toText(), expected);
+    QCOMPARE(profile.toText(), text);
+    QCOMPARE(Openvpn3Profile::fromText(profile.toText()).toText(), text);
+    // What its entries say leaves the formatting out, and only that.
+    QCOMPARE(profile.optionsText(), expected);
+    QCOMPARE(Openvpn3Profile::fromText(expected).optionsText(), expected);
 }
 
-void Openvpn3ProfileTest::commentsAreDropped_data()
+void Openvpn3ProfileTest::commentsAreFormatting_data()
 {
     QTest::addColumn<QString>("text");
     QTest::addColumn<QString>("expected");
@@ -217,9 +233,10 @@ void Openvpn3ProfileTest::commentsAreDropped_data()
     QTest::newRow("inside double quotes") << u"setenv a \"# value\"\n"_s << u"setenv a \"# value\"\n"_s;
     QTest::newRow("inside single quotes") << u"setenv a '; value'\n"_s << u"setenv a '; value'\n"_s;
     QTest::newRow("escaped") << u"setenv a \\#value\n"_s << u"setenv a \\#value\n"_s;
-    // OpenVPN 2 reads this as the literal value a#b, openvpn3 stops at the
-    // hash. They disagree, so it is not a comment anybody can be sure about.
-    QTest::newRow("glued to a word") << u"setenv a value#glued\n"_s << u"setenv a value#glued\n"_s;
+    // OpenVPN 2 reads this as the literal value a#b; openvpn3, which is what
+    // reads the stored profile, stops at the hash. The line is kept as
+    // written, and what its entry says is what openvpn3 reads.
+    QTest::newRow("glued to a word") << u"setenv a value#glued\n"_s << u"setenv a value\n"_s;
     QTest::newRow("opaque payload") << u"<ca>\n# payload\nA;B#C\n</ca>\n"_s << u"<ca>\n# payload\nA;B#C\n</ca>\n"_s;
     // A credential is payload too, and one may well start with a '#' or a
     // ';'. Taking it for a comment would hand openvpn3 the wrong password.
@@ -269,7 +286,7 @@ void Openvpn3ProfileTest::commentsAreDropped_data()
     // the value in front of them, so the separator run a comment is cut with
     // stops at one, and one cannot start the word a comment has to begin.
     QTest::newRow("unicode whitespace stays in a value") << u"setenv label value  # note\n"_s << u"setenv label value \n"_s;
-    QTest::newRow("unicode whitespace alone before a comment") << u"setenv label value # note\n"_s << u"setenv label value # note\n"_s;
+    QTest::newRow("unicode whitespace alone before a comment") << u"setenv label value # note\n"_s << u"setenv label value \n"_s;
     QTest::newRow("unicode line separator stays in a value") << u"setenv label value  ; note\n"_s << u"setenv label value \n"_s;
     QTest::newRow("a value that is only unicode whitespace") << u"setenv label   # note\n"_s << u"setenv label  \n"_s;
 
@@ -288,18 +305,20 @@ void Openvpn3ProfileTest::commentsAreDropped_data()
         << u"<ca>\nPEM\n</ca> # not a closer\nMORE\n</ca>\n"_s << u"<ca>\nPEM\n</ca> # not a closer\nMORE\n</ca>\n"_s;
 }
 
-void Openvpn3ProfileTest::commentsAreDropped()
+void Openvpn3ProfileTest::commentsAreFormatting()
 {
     QFETCH(QString, text);
     QFETCH(QString, expected);
 
-    QCOMPARE(Openvpn3Profile::fromText(text).toText(), expected);
-    // Dropping comments is idempotent: what came back has nothing left to
-    // drop, so storing it and loading it again changes nothing more.
-    QCOMPARE(Openvpn3Profile::fromText(expected).toText(), expected);
+    // Kept in the document; not part of any entry. "What goes" below is what
+    // the entries leave out, and exactly that much.
+    const Openvpn3Profile profile = Openvpn3Profile::fromText(text);
+    QCOMPARE(profile.toText(), text);
+    QCOMPARE(profile.optionsText(), expected);
+    QCOMPARE(Openvpn3Profile::fromText(expected).optionsText(), expected);
 }
 
-void Openvpn3ProfileTest::blankLinesAreDropped_data()
+void Openvpn3ProfileTest::blankLinesAreFormatting_data()
 {
     QTest::addColumn<QString>("text");
     QTest::addColumn<QString>("expected");
@@ -346,57 +365,253 @@ void Openvpn3ProfileTest::blankLinesAreDropped_data()
     QTest::newRow("a line of vertical tabs") << u"client\n\v\nremote a.example.net\n"_s << u"client\n\v\nremote a.example.net\n"_s;
 }
 
-void Openvpn3ProfileTest::blankLinesAreDropped()
+void Openvpn3ProfileTest::blankLinesAreFormatting()
 {
     QFETCH(QString, text);
     QFETCH(QString, expected);
 
-    QCOMPARE(Openvpn3Profile::fromText(text).toText(), expected);
-    // Dropping them is idempotent: what came back has nothing left to drop,
-    // so storing it and loading it again changes nothing more.
-    QCOMPARE(Openvpn3Profile::fromText(expected).toText(), expected);
-    // And no number of further passes does either.
-    QString text2 = expected;
-    for (int pass = 0; pass < 3; ++pass) {
-        text2 = Openvpn3Profile::fromText(text2).toText();
-    }
-    QCOMPARE(text2, expected);
+    const Openvpn3Profile profile = Openvpn3Profile::fromText(text);
+    QCOMPARE(profile.toText(), text);
+    QCOMPARE(profile.optionsText(), expected);
+    QCOMPARE(Openvpn3Profile::fromText(expected).optionsText(), expected);
 }
 
-void Openvpn3ProfileTest::noMutatorCanPutABlankLineBack()
+void Openvpn3ProfileTest::mutatorsKeepTheFormatting()
 {
-    // The document has no blank lines, so nothing done to it may write one.
-    // Reloading what it serializes is how that is checked: a blank line a
-    // mutator wrote would be dropped on the way back in, so the text would
-    // not survive the round trip -- which is exactly the row a user edited
-    // and then lost on the next load.
+    // Everything the editor does to a document, in one pass over it, and the
+    // formatting is still all there afterwards -- but for the comment at the
+    // end of a line that was itself removed.
     Openvpn3Profile profile = Openvpn3Profile::fromText(kRich);
-    // Everything the editor does to a document, in one pass over it.
     profile.setDirective(u"cipher"_s, {u"AES-256-GCM"_s});
     profile.setPresent(u"pull"_s, true);
     profile.setArguments(profile.indexOf(u"dev"_s), {u"tap"_s});
     profile.setArguments(profile.indexOf(u"key-direction"_s), {});
-    profile.setBlock(u"connection"_s, u"\nremote b.example.net\n\n"_s);
     profile.setBody(profile.indexOf(u"ca"_s), u"\nNEW-CA\n"_s);
     profile.append(Openvpn3Profile::directive(u"verb"_s));
-    profile.insert(0, Openvpn3Profile::directive(u"client"_s));
+    profile.insert(0, Openvpn3Profile::directive(u"nobind"_s));
     profile.move(0, 1);
-    profile.removeAt(0);
+    profile.removeAt(profile.indexOf(u"nobind"_s));
     profile.removeAll(u"proto"_s);
 
     const QString text = profile.toText();
-    // A blank line typed into a scope went the way one read from a file does;
-    // the one typed into the opaque payload is content and stayed.
-    QVERIFY(text.contains(u"<connection>\nremote b.example.net\n</connection>\n"_s));
-    QVERIFY(text.contains(u"<ca>\n\nNEW-CA\n</ca>\n"_s));
-    // Nothing between two directives is a blank line.
-    QVERIFY(!text.contains(u"\n\nclient"_s));
-    QVERIFY(!text.contains(u"\n\nverb"_s));
-    // And the document is a fixed point: a reload changes nothing. A blank
-    // line any of the above wrote would be dropped on the way back in, so the
-    // text would not come back the same.
+    for (const QString &kept : {u"##\n# An office profile\n##\n"_s, u"dev tap # the device\n"_s, u"tcp\t; the fallback\n"_s, u"\n\n; a semicolon comment\n"_s,
+                                u"<connection>\n# the failover entry\n\nremote fallback.example.net 1194 udp\nhttp-proxy proxy.example.net 8080 # via the proxy\n</connection>\n"_s,
+                                u"<ca>\n\nNEW-CA\n</ca>\n"_s}) {
+        QVERIFY2(text.contains(kept), qPrintable(kept));
+    }
+    QVERIFY(!text.contains(u"proto udp"_s));
+    QVERIFY(text.endsWith(u"cipher AES-256-GCM\npull\nverb\n"_s));
+    // And the document is a fixed point: a reload changes nothing.
     QCOMPARE(Openvpn3Profile::fromText(text).toText(), text);
-    QCOMPARE(Openvpn3Profile::fromText(Openvpn3Profile::fromText(text).toText()).toText(), text);
+}
+
+void Openvpn3ProfileTest::editingADirectiveKeepsItsComment()
+{
+    Openvpn3Profile profile = Openvpn3Profile::fromText(u"# head\nclient\n  dev tun   # the device\nremote a.example.net 1194\t; primary\nverb 3"_s);
+
+    profile.setArguments(1, {u"tap"_s});
+    profile.setArguments(2, {u"b.example.net"_s, u"443"_s});
+    profile.setArguments(3, {u"4"_s});
+    // The edited line is rewritten -- its padding is the renderer's now --
+    // and keeps the comment at its end, the formatting in front of it, and a
+    // final line without a terminator stays without one.
+    QCOMPARE(profile.toText(), u"# head\nclient\ndev tap   # the device\nremote b.example.net 443\t; primary\nverb 4"_s);
+    QCOMPARE(profile.at(1).arguments, QStringList({u"tap"_s}));
+
+    profile.rename(3, u"verbosity"_s);
+    QVERIFY(profile.toText().endsWith(u"\nverbosity 4"_s));
+}
+
+void Openvpn3ProfileTest::removingAnEntryKeepsTheFormattingAroundIt()
+{
+    Openvpn3Profile profile = Openvpn3Profile::fromText(u"client\n\n# about the server\nremote a.example.net # inline\n# about dev\ndev tun\n# the end\n"_s);
+
+    profile.removeAt(1);
+    // The directive went; the lines in front of it are the document's and
+    // stay where they were, and so does what the comment at its end said, on
+    // a line of its own.
+    QCOMPARE(profile.toText(), u"client\n\n# about the server\n# inline\n# about dev\ndev tun\n# the end\n"_s);
+
+    profile.removeAt(1);
+    QCOMPARE(profile.toText(), u"client\n\n# about the server\n# inline\n# about dev\n# the end\n"_s);
+    QCOMPARE(profile.count(), 1);
+}
+
+void Openvpn3ProfileTest::movingAnEntryTakesItsCommentsAndLeavesItsPlace()
+{
+    // The comment directly above an entry is about it; a blank line, and
+    // anything in front of one, belongs to the place.
+    const QString text = u"# header\n\nclient\n\n# primary\nremote a.example.net\n# backup\nremote b.example.net\n\ndev tun\n"_s;
+    Openvpn3Profile profile = Openvpn3Profile::fromText(text);
+
+    profile.move(2, 1);
+    QCOMPARE(profile.toText(), u"# header\n\nclient\n\n# backup\nremote b.example.net\n# primary\nremote a.example.net\n\ndev tun\n"_s);
+    profile.move(1, 2);
+    QCOMPARE(profile.toText(), text);
+
+    // Across several places, the same.
+    profile.move(0, 3);
+    QCOMPARE(profile.toText(), u"# header\n\n# primary\nremote a.example.net\n\n# backup\nremote b.example.net\ndev tun\n\nclient\n"_s);
+    profile.move(3, 0);
+    QCOMPARE(profile.toText(), text);
+
+    // reorder() is the general form, by identity.
+    const QList<int> remotes = profile.indexesOf(u"remote"_s);
+    profile.reorder(remotes, {profile.at(remotes.at(1)).id(), profile.at(remotes.at(0)).id()});
+    QCOMPARE(profile.toText(), u"# header\n\nclient\n\n# backup\nremote b.example.net\n# primary\nremote a.example.net\n\ndev tun\n"_s);
+}
+
+void Openvpn3ProfileTest::insertingGoesInFrontOfTheNextEntrysComments()
+{
+    Openvpn3Profile profile = Openvpn3Profile::fromText(u"client\n# about dev\ndev tun\n"_s);
+    profile.insert(1, Openvpn3Profile::directive(u"nobind"_s));
+    QCOMPARE(profile.toText(), u"client\nnobind\n# about dev\ndev tun\n"_s);
+}
+
+void Openvpn3ProfileTest::appendingGoesInFrontOfTheTrailingFormatting()
+{
+    Openvpn3Profile profile = Openvpn3Profile::fromText(u"client\n\n# end of file"_s);
+    profile.append(Openvpn3Profile::directive(u"verb"_s, {u"3"_s}));
+    QCOMPARE(profile.toText(), u"client\nverb 3\n\n# end of file"_s);
+
+    // Without a final newline on the last entry, a separator is added and the
+    // old line is otherwise left alone.
+    Openvpn3Profile bare = Openvpn3Profile::fromText(u"client\r\ndev tun"_s);
+    bare.append(Openvpn3Profile::directive(u"verb"_s));
+    QCOMPARE(bare.toText(), u"client\r\ndev tun\r\nverb\r\n"_s);
+}
+
+void Openvpn3ProfileTest::replacingAnEntryKeepsItsComment()
+{
+    Openvpn3Profile profile = Openvpn3Profile::fromText(u"client\n# the CA\nca /etc/ca.crt   # company CA\ndev tun"_s);
+    profile.replaceWith(1, Openvpn3Profile::fromText(u"<ca>\nPEM\n</ca>\n"_s).entries());
+    QCOMPARE(profile.toText(), u"client\n# the CA\n# company CA\n<ca>\nPEM\n</ca>\ndev tun"_s);
+
+    // At the end of a document without a final newline, still none.
+    Openvpn3Profile last = Openvpn3Profile::fromText(u"client\nca /etc/ca.crt"_s);
+    last.replaceWith(1, Openvpn3Profile::fromText(u"<ca>\nPEM\n</ca>\nkey-direction 1\n"_s).entries());
+    QCOMPARE(last.toText(), u"client\n<ca>\nPEM\n</ca>\nkey-direction 1"_s);
+
+    // Replaced with nothing, its line goes -- but not what its comment said,
+    // which stays as a line of its own.
+    Openvpn3Profile gone = Openvpn3Profile::fromText(u"client\n# x\nauth-user-pass a.txt\nverb 3\n"_s);
+    gone.replaceWith(1, {});
+    QCOMPARE(gone.toText(), u"client\n# x\nverb 3\n"_s);
+    Openvpn3Profile noted = Openvpn3Profile::fromText(u"client\n# x\nauth-user-pass a.txt # account note\nverb 3\n"_s);
+    noted.replaceWith(1, {});
+    QCOMPARE(noted.toText(), u"client\n# x\n# account note\nverb 3\n"_s);
+    Openvpn3Profile finalLine = Openvpn3Profile::fromText(u"client\nauth-user-pass a.txt ; note"_s);
+    finalLine.replaceWith(1, {});
+    QCOMPARE(finalLine.toText(), u"client\n; note"_s);
+}
+
+void Openvpn3ProfileTest::editsKeepTheDocumentsLineEndings()
+{
+    Openvpn3Profile profile = Openvpn3Profile::fromText(u"# w\r\nclient\r\ndev tun # d\r\n<ca>\r\nPEM\r\n</ca>\r\n"_s);
+    profile.setArguments(1, {u"tap"_s});
+    profile.setBody(2, u"NEW\nPEM\n"_s); // as a text box hands it back
+    profile.append(Openvpn3Profile::directive(u"verb"_s));
+    profile.append(Openvpn3Profile::block(u"tls-crypt"_s, u"K\n"_s));
+    profile.setBody(4, u"K\n"_s);
+    QCOMPARE(profile.toText(), u"# w\r\nclient\r\ndev tap # d\r\n<ca>\r\nNEW\r\nPEM\r\n</ca>\r\nverb\r\n<tls-crypt>\r\nK\r\n</tls-crypt>\r\n"_s);
+    QVERIFY(profile.usesCrlf());
+}
+
+void Openvpn3ProfileTest::connectionCaveats()
+{
+    const Openvpn3Profile profile = Openvpn3Profile::fromText(
+        u"client\n<connection>\n# fine\nremote a.example.net 1194\nproto tcp\nport 443\nca scoped.crt\nhttp-proxy p.example.net 8080\n<ca>\nPEM\n</ca>\n</connection>\n"
+        u"<connection>\nremote b.example.net\n</connection>\nca top.crt\n"_s);
+
+    const QList<Openvpn3Profile::ConnectionCaveat> caveats = profile.connectionCaveats();
+    QCOMPARE(caveats.size(), 3);
+    QCOMPARE(caveats.at(0).kind, Openvpn3Profile::ConnectionCaveat::FileReference);
+    QCOMPARE(caveats.at(0).block, 1);
+    QCOMPARE(caveats.at(0).name, u"ca"_s);
+    QCOMPARE(caveats.at(0).detail, u"scoped.crt"_s);
+    QCOMPARE(caveats.at(1).kind, Openvpn3Profile::ConnectionCaveat::IgnoredOption);
+    QCOMPARE(caveats.at(1).name, u"http-proxy"_s);
+    QCOMPARE(caveats.at(2).kind, Openvpn3Profile::ConnectionCaveat::IgnoredOption);
+    QCOMPARE(caveats.at(2).name, u"ca"_s);
+
+    // Only the top level is the backend's to resolve.
+    QVERIFY(profile.needsNormalization());
+    QVERIFY(!Openvpn3Profile::fromText(u"client\n<connection>\nremote a\nca scoped.crt\nauth-user-pass creds.txt\n</connection>\n"_s).needsNormalization());
+
+    // A scope past openvpn3's limit says so.
+    QString big = u"remote a.example.net\n"_s;
+    while (Openvpn3Profile::connectionBlockCost(big) < Openvpn3Profile::kMaxConnectionBlockCost) {
+        big += u"# padding the scope out with a comment openvpn3 still counts\n"_s;
+    }
+    const auto large = Openvpn3Profile::fromText(u"client\n<connection>\n"_s + big + u"</connection>\n"_s).connectionCaveats();
+    QCOMPARE(large.size(), 1);
+    QCOMPARE(large.at(0).kind, Openvpn3Profile::ConnectionCaveat::TooLarge);
+}
+
+void Openvpn3ProfileTest::blockBoundariesFollowOpenvpn3()
+{
+    // openvpn3 closes a block only on a line that is exactly its closing tag
+    // (is_close_tag() on the raw line, terminator aside): an indented one is
+    // payload, and what follows it is still inside the block.
+    const QString indented = u"client\n<x>\n </x>\nca /missing.pem\n</x>\nremote a.example.net\n"_s;
+    const Openvpn3Profile profile = Openvpn3Profile::fromText(indented);
+    QCOMPARE(profile.count(), 3);
+    QCOMPARE(profile.at(1).name, u"x"_s);
+    QCOMPARE(profile.at(1).body, u" </x>\nca /missing.pem\n"_s);
+    QVERIFY(!profile.needsNormalization());
+    QCOMPARE(profile.toText(), indented);
+
+    // It opens a block on the first word of a lexed line, so a quoted or
+    // padded opening tag is one.
+    const QString quoted = u"client\n\"<connection>\"\nremote a.example.net\nca scoped.crt\n</connection>\n"_s;
+    const Openvpn3Profile scoped = Openvpn3Profile::fromText(quoted);
+    QCOMPARE(scoped.count(), 2);
+    QVERIFY(scoped.at(1).isBlock());
+    QCOMPARE(scoped.at(1).name, u"connection"_s);
+    QVERIFY(!scoped.needsNormalization());
+    QCOMPARE(scoped.remoteHosts(), QStringList({u"a.example.net"_s}));
+    QCOMPARE(scoped.toText(), quoted);
+}
+
+void Openvpn3ProfileTest::blockTagsTheImporterReadsDifferentlyAreFound_data()
+{
+    QTest::addColumn<QString>("text");
+    QTest::addColumn<QString>("found");
+
+    QTest::newRow("canonical") << u"client\n<connection>\nremote a\n<ca>\nPEM\n</ca>\n</connection>\n<x>\n# ca a.crt\n</x>\n"_s << QString();
+    QTest::newRow("crlf canonical") << u"client\r\n<ca>\r\nPEM\r\n</ca>\r\n"_s << QString();
+    QTest::newRow("commented opener") << u"client\n<connection> # primary\nremote a\n</connection>\n"_s << u"connection"_s;
+    QTest::newRow("quoted opener") << u"client\n\"<ca>\"\nPEM\n</ca>\n"_s << u"ca"_s;
+    QTest::newRow("indented closer") << u"client\n<x>\n </x>\nca a.crt\n</x>\n"_s << u"x"_s;
+    // Inside a <connection> block the importer looks for nothing but the
+    // closing tag, and inlines nothing, so a nested opener is no
+    // disagreement; an indented closing tag of the scope is.
+    QTest::newRow("nested commented opener") << u"client\n<connection>\nremote a\n<ca> # c\nPEM\n</ca>\n</connection>\n"_s << QString();
+    QTest::newRow("indented scope closer") << u"client\n<connection>\nremote a\n  </connection>\nca a.crt\n</connection>\n"_s << u"connection"_s;
+    QTest::newRow("a tag with a space") << u"client\n<a b>\nca a.crt\n</a b>\n"_s << u"a b"_s;
+    // Padding the importer strips and openvpn3 lexes away is no disagreement.
+    QTest::newRow("padded opener") << u"client\n  <ca>  \nPEM\n</ca>\n"_s << QString();
+}
+
+void Openvpn3ProfileTest::blockTagsTheImporterReadsDifferentlyAreFound()
+{
+    // The backend's importer recognises a block only by its stripped line
+    // being exactly the tag, where openvpn3 lexes the line; a profile where
+    // the two disagree would have files inlined, or credentials lifted, out
+    // of what openvpn3 reads as a scope or a payload.
+    QFETCH(QString, text);
+    QFETCH(QString, found);
+    QCOMPARE(Openvpn3Profile::fromText(text).importerTagDisagreement(), found);
+}
+
+void Openvpn3ProfileTest::connectionBlockCostFollowsOpenvpn3()
+{
+    // RemoteList charges the text, each line with its '\n', 64 per option and
+    // 16 per word of an option line; a nested block is one option and its
+    // opening tag one word, its payload text only.
+    QCOMPARE(Openvpn3Profile::connectionBlockCost(u"remote a.example.net 1194\n"_s), 26 + 64 + 3 * 16);
+    QCOMPARE(Openvpn3Profile::connectionBlockCost(u"# note\n\n"_s), 8);
+    QCOMPARE(Openvpn3Profile::connectionBlockCost(u"<ca>\nPEM\n</ca>\n"_s), 15 + 64 + 16);
 }
 
 void Openvpn3ProfileTest::aMalformedCloserNeverBecomesAScopeBoundary()
@@ -432,28 +647,28 @@ void Openvpn3ProfileTest::noEntryIsEverFormatting()
             QVERIFY(!profile.sourceAt(profile.indexOfId(entry.id())).trimmed().isEmpty());
         }
     }
-    // Nothing is left of a document that was only ever formatting.
+    // A document that is only formatting has no entries, and is still all
+    // there.
     QVERIFY(Openvpn3Profile::fromText(u"# one\n; two\n"_s).isEmpty());
+    QCOMPARE(Openvpn3Profile::fromText(u"# one\n; two\n"_s).toText(), u"# one\n; two\n"_s);
     QVERIFY(Openvpn3Profile::fromText(u"\n\n   \n"_s).isEmpty());
-    QCOMPARE(Openvpn3Profile::fromText(u"client # trailing"_s).toText(), u"client"_s);
+    QCOMPARE(Openvpn3Profile::fromText(u"client # trailing"_s).toText(), u"client # trailing"_s);
+    QCOMPARE(Openvpn3Profile::fromText(u"client # trailing"_s).optionsText(), u"client"_s);
 }
 
-void Openvpn3ProfileTest::aScopeBodyNeverTakesAComment()
+void Openvpn3ProfileTest::aScopeBodyKeepsItsComments()
 {
-    // A <connection> body is the scope's directives, and the editor hands it
-    // over as text. A comment put in that way has to go the same way one
-    // read from a file does: otherwise it would be saved and then vanish the
-    // next time the connection was loaded.
+    // A <connection> body is kept as written, the way the backend keeps it;
+    // its options are read from it the same way the document's are.
     Openvpn3Profile profile = Openvpn3Profile::fromText(u"client\n<connection>\nremote a.example.net\n</connection>\n"_s);
     QCOMPARE(profile.at(1).name, u"connection"_s);
 
     profile.setBody(1, u"# mine\nremote b.example.net # here\n"_s);
-    QCOMPARE(profile.toText(), u"client\n<connection>\nremote b.example.net\n</connection>\n"_s);
+    QCOMPARE(profile.toText(), u"client\n<connection>\n# mine\nremote b.example.net # here\n</connection>\n"_s);
+    QCOMPARE(profile.remoteHosts(), QStringList({u"b.example.net"_s}));
+    QCOMPARE(profile.optionsText(), u"client\n<connection>\nremote b.example.net\n</connection>\n"_s);
 
-    // So does one in a scope built from scratch, or set by name.
-    QCOMPARE(Openvpn3Profile::block(u"connection"_s, u"remote c.example.net # here\n"_s).body, u"remote c.example.net\n"_s);
-    profile.setBlock(u"connection"_s, u"remote d.example.net ; here\n"_s);
-    QCOMPARE(profile.toText(), u"client\n<connection>\nremote d.example.net\n</connection>\n"_s);
+    QCOMPARE(Openvpn3Profile::block(u"connection"_s, u"remote c.example.net # here\n"_s).body, u"remote c.example.net # here\n"_s);
 
     // An opaque payload is content rather than directives, so its body is
     // taken exactly as it is given -- key material included.
@@ -462,23 +677,14 @@ void Openvpn3ProfileTest::aScopeBodyNeverTakesAComment()
     QCOMPARE(Openvpn3Profile::block(u"key"_s, u"KEY # payload\n"_s).body, u"KEY # payload\n"_s);
 }
 
-void Openvpn3ProfileTest::aScopeBodyNeverTakesABlankLine()
+void Openvpn3ProfileTest::aScopeBodyKeepsItsBlankLines()
 {
-    // The same for the blank lines a user spaces a <connection> body out with:
-    // the scope holds directives, and an entry that is not there after the
-    // next load is not an entry to keep now.
     Openvpn3Profile profile = Openvpn3Profile::fromText(u"client\n<connection>\nremote a.example.net\n</connection>\n"_s);
 
     profile.setBody(1, u"\nremote b.example.net\n   \nhttp-proxy proxy.example.net 8080\n\n"_s);
-    QCOMPARE(profile.toText(), u"client\n<connection>\nremote b.example.net\nhttp-proxy proxy.example.net 8080\n</connection>\n"_s);
+    QCOMPARE(profile.toText(), u"client\n<connection>\n\nremote b.example.net\n   \nhttp-proxy proxy.example.net 8080\n\n</connection>\n"_s);
+    QCOMPARE(Openvpn3Profile::fromText(profile.toText()).toText(), profile.toText());
 
-    // So does one in a scope built from scratch, or set by name.
-    QCOMPARE(Openvpn3Profile::block(u"connection"_s, u"\nremote c.example.net\n\n"_s).body, u"remote c.example.net\n"_s);
-    profile.setBlock(u"connection"_s, u"\n\nremote d.example.net\n"_s);
-    QCOMPARE(profile.toText(), u"client\n<connection>\nremote d.example.net\n</connection>\n"_s);
-
-    // An opaque payload is content, so every line of what is typed into it
-    // stays -- a blank one at either end of a key included.
     profile.setBlock(u"key"_s, u"\nKEY\n\n"_s);
     QVERIFY(profile.toText().contains(u"<key>\n\nKEY\n\n</key>\n"_s));
     QCOMPARE(Openvpn3Profile::block(u"ca"_s, u"\nPEM\n"_s).body, u"\nPEM\n"_s);
@@ -554,32 +760,31 @@ void Openvpn3ProfileTest::parsesQuoting_data()
     QTest::newRow("double quotes") << QStringLiteral("setenv x \"a b\"") << QStringList({u"setenv"_s, u"x"_s, u"a b"_s});
     QTest::newRow("single quotes") << QStringLiteral("setenv x 'a b'") << QStringList({u"setenv"_s, u"x"_s, u"a b"_s});
     QTest::newRow("escape in double") << QStringLiteral("setenv x \"a\\\"b\"") << QStringList({u"setenv"_s, u"x"_s, u"a\"b"_s});
-    // Deliberate, and the one place where following OpenVPN 2 rather than
-    // openvpn3 is visible: openvpn3 would read 'a\b' as "ab" and would stay
-    // inside the quote past an escaped apostrophe. The line is never cut, so
-    // what it means to openvpn3 is intact until somebody edits the entry.
-    // See docs/limitations.md.
-    QTest::newRow("no escape in single") << QStringLiteral("setenv x 'a\\b'") << QStringList({u"setenv"_s, u"x"_s, u"a\\b"_s});
-    QTest::newRow("escaped apostrophe closes the quote for OpenVPN 2")
-        << QStringLiteral("setenv x 'a\\' tail") << QStringList({u"setenv"_s, u"x"_s, u"a\\"_s, u"tail"_s});
-    // Outside quotes a backslash escapes the next character for both lexers:
-    // OpenVPN 2's parse_line() leaves its escape handling off only inside
-    // single quotes, and openvpn3's StandardLex never turns it off at all. An
-    // escaped separator is therefore part of the value in front of it, not the
-    // end of it.
+    // What openvpn3 reads (OptionList::LexComment through Split::by_space),
+    // because that is what reads the stored profile. A backslash escapes the
+    // next character everywhere, single quotes included.
+    QTest::newRow("escape in single") << QStringLiteral("setenv x 'a\\b'") << QStringList({u"setenv"_s, u"x"_s, u"ab"_s});
+    QTest::newRow("escaped apostrophe stays inside the quote")
+        << QStringLiteral("setenv x 'a\\' # tail'") << QStringList({u"setenv"_s, u"x"_s, u"a' # tail"_s});
+    // An escaped separator is still a separator for by_space: the backslash
+    // goes, the space splits.
     QTest::newRow("escaped space outside quotes")
-        << QStringLiteral("setenv x hello\\ world") << QStringList({u"setenv"_s, u"x"_s, u"hello world"_s});
+        << QStringLiteral("setenv x hello\\ world") << QStringList({u"setenv"_s, u"x"_s, u"hello"_s, u"world"_s});
     QTest::newRow("escaped tab outside quotes")
-        << QStringLiteral("setenv x hello\\\tworld") << QStringList({u"setenv"_s, u"x"_s, u"hello\tworld"_s});
+        << QStringLiteral("setenv x hello\\\tworld") << QStringList({u"setenv"_s, u"x"_s, u"hello"_s, u"world"_s});
     QTest::newRow("escaped hash outside quotes")
         << QStringLiteral("setenv x \\#1") << QStringList({u"setenv"_s, u"x"_s, u"#1"_s});
     QTest::newRow("escaped quote outside quotes")
         << QStringLiteral("setenv x a\\\"b") << QStringList({u"setenv"_s, u"x"_s, u"a\"b"_s});
     QTest::newRow("escaped backslash outside quotes")
         << QStringLiteral("setenv x a\\\\b") << QStringList({u"setenv"_s, u"x"_s, u"a\\b"_s});
-    // Nothing to escape at the end of a line, so it stays the character it is.
+    // A backslash with nothing after it escapes nothing, and is gone.
     QTest::newRow("lone trailing backslash")
-        << QStringLiteral("setenv x a\\") << QStringList({u"setenv"_s, u"x"_s, u"a\\"_s});
+        << QStringLiteral("setenv x a\\") << QStringList({u"setenv"_s, u"x"_s, u"a"_s});
+    // A hash glued to a word starts a comment for openvpn3.
+    QTest::newRow("hash glued to a host") << QStringLiteral("remote vpn.example.net#note 1194")
+                                          << QStringList({u"remote"_s, u"vpn.example.net"_s});
+    QTest::newRow("semicolon glued to a word") << QStringLiteral("dev tun;x") << QStringList({u"dev"_s, u"tun"_s});
     QTest::newRow("trailing comment") << QStringLiteral("dev tun # a comment") << QStringList({u"dev"_s, u"tun"_s});
     QTest::newRow("empty argument") << QStringLiteral("setenv x \"\"") << QStringList({u"setenv"_s, u"x"_s, QString()});
     QTest::newRow("comma inside quotes") << QStringLiteral("verify-x509-name \"C=NO, O=X\" subject")
@@ -595,18 +800,16 @@ void Openvpn3ProfileTest::parsesQuoting()
 
 void Openvpn3ProfileTest::anEscapedSeparatorIsPartOfItsValue()
 {
-    // Reading the line as three arguments would be bad enough on its own, but
-    // the damage lands on save: editing the label would rewrite the escaped
-    // space as a separator, and the one value would become two.
+    // openvpn3 reads an escaped space as a separator; so does the table, and
+    // editing another argument writes the same values back, so what openvpn3
+    // reads from the rest of the line does not change.
     Openvpn3Profile profile = Openvpn3Profile::fromText(u"setenv label hello\\ world\n"_s);
     const int index = profile.indexOf(u"setenv"_s);
     QVERIFY(index >= 0);
-    QCOMPARE(profile.at(index).arguments, QStringList({u"label"_s, u"hello world"_s}));
+    QCOMPARE(profile.at(index).arguments, QStringList({u"label"_s, u"hello"_s, u"world"_s}));
 
-    profile.setArguments(index, {u"tag"_s, profile.at(index).arguments.value(1)});
-    // Rewritten, so quoted rather than escaped -- but the same one value.
-    QCOMPARE(Openvpn3Profile::fromText(profile.toText()).arguments(u"setenv"_s),
-             QStringList({u"tag"_s, u"hello world"_s}));
+    profile.setArguments(index, {u"tag"_s, u"hello"_s, u"world"_s});
+    QCOMPARE(Openvpn3Profile::fromText(profile.toText()).arguments(u"setenv"_s), QStringList({u"tag"_s, u"hello"_s, u"world"_s}));
 }
 
 void Openvpn3ProfileTest::anEscapedTrailingSeparatorIsPartOfItsValue_data()
@@ -614,19 +817,16 @@ void Openvpn3ProfileTest::anEscapedTrailingSeparatorIsPartOfItsValue_data()
     QTest::addColumn<QString>("line");
     QTest::addColumn<QString>("value");
 
-    // The escaped space is the last character of the value, so there is
-    // nothing after it to tell the lexer where the value ended. Trimming the
-    // line before splitting it cannot tell this from padding and loses it.
-    QTest::newRow("escaped space at end of line") << u"setenv label value\\ \n"_s << u"value "_s;
-    QTest::newRow("escaped tab at end of line") << u"setenv label value\\\t\n"_s << u"value\t"_s;
-    QTest::newRow("escaped space before a comment") << u"setenv label value\\  # note\n"_s << u"value "_s;
-    QTest::newRow("escaped space with CRLF") << u"setenv label value\\ \r\n"_s << u"value "_s;
-    QTest::newRow("escaped space and no final newline") << u"setenv label value\\ "_s << u"value "_s;
-    // An even number of backslashes are escaped backslashes, so the space
-    // after them separates after all and the value ends in one backslash.
+    // As openvpn3 reads it: the backslash goes and the whitespace separates.
+    QTest::newRow("escaped space at end of line") << u"setenv label value\\ \n"_s << u"value"_s;
+    QTest::newRow("escaped tab at end of line") << u"setenv label value\\\t\n"_s << u"value"_s;
+    QTest::newRow("escaped space before a comment") << u"setenv label value\\  # note\n"_s << u"value"_s;
+    QTest::newRow("escaped space with CRLF") << u"setenv label value\\ \r\n"_s << u"value"_s;
+    QTest::newRow("escaped space and no final newline") << u"setenv label value\\ "_s << u"value"_s;
     QTest::newRow("escaped backslash then a separator") << u"setenv label value\\\\ \n"_s << u"value\\"_s;
-    // Padding is padding, however much of it there is.
     QTest::newRow("unescaped trailing space") << u"setenv label value   \n"_s << u"value"_s;
+    // Inside quotes whitespace is the value's, escaped or not.
+    QTest::newRow("quoted trailing space") << u"setenv label \"value \"\n"_s << u"value "_s;
 }
 
 void Openvpn3ProfileTest::anEscapedTrailingSeparatorIsPartOfItsValue()
@@ -639,10 +839,27 @@ void Openvpn3ProfileTest::anEscapedTrailingSeparatorIsPartOfItsValue()
     QVERIFY(index >= 0);
     QCOMPARE(profile.at(index).arguments, QStringList({u"label"_s, value}));
 
-    // And the damage this does when it is read wrongly: editing the label
-    // rewrites the line, so a value read short is a value saved short.
+    // Editing the label rewrites the line, and the value comes back as read.
     profile.setArguments(index, {u"tag"_s, profile.at(index).arguments.value(1)});
     QCOMPARE(Openvpn3Profile::fromText(profile.toText()).arguments(u"setenv"_s), QStringList({u"tag"_s, value}));
+}
+
+void Openvpn3ProfileTest::editingALineKeepsWhatOpenvpn3ReadsFromTheRestOfIt()
+{
+    // A hash glued to the host is a comment for openvpn3. Editing the port
+    // must not turn it into part of the host name.
+    Openvpn3Profile profile = Openvpn3Profile::fromText(u"remote vpn.example.net#note 1194\n"_s);
+    QCOMPARE(profile.at(0).arguments, QStringList({u"vpn.example.net"_s}));
+    profile.setArguments(0, {u"vpn.example.net"_s, u"1195"_s});
+    QCOMPARE(profile.toText(), u"remote vpn.example.net 1195 #note 1194\n"_s);
+    QCOMPARE(Openvpn3Profile::fromText(profile.toText()).at(0).arguments, QStringList({u"vpn.example.net"_s, u"1195"_s}));
+
+    // A single-quoted value with an escaped apostrophe keeps openvpn3's
+    // reading when another argument of the line is edited.
+    Openvpn3Profile quoted = Openvpn3Profile::fromText(u"setenv a 'x\\' # literal'\n"_s);
+    QCOMPARE(quoted.at(0).arguments, QStringList({u"a"_s, u"x' # literal"_s}));
+    quoted.setArguments(0, {u"b"_s, u"x' # literal"_s});
+    QCOMPARE(Openvpn3Profile::fromText(quoted.toText()).at(0).arguments, QStringList({u"b"_s, u"x' # literal"_s}));
 }
 
 void Openvpn3ProfileTest::untouchedEntriesKeepTheirQuoting()
@@ -664,11 +881,12 @@ void Openvpn3ProfileTest::editingOneEntryLeavesTheOthersAlone()
     QString text = profile.toText();
 
     QCOMPARE(text.count(QStringLiteral("remote vpn1.example.net 1194 udp\n")), 2);
-    QVERIFY(text.contains(QStringLiteral("remote vpn3.example.net 443 tcp\n")));
+    // The edited line keeps the comment at its end.
+    QVERIFY(text.contains(QStringLiteral("remote vpn3.example.net 443 tcp\t; the fallback\n")));
     QVERIFY(!text.contains(QStringLiteral("vpn2.example.net")));
-    // Everything else, the unknown directive included, is still byte for byte
-    // what the document was once its formatting was gone.
-    QCOMPARE(text.replace(QStringLiteral("remote vpn3.example.net 443 tcp"), QStringLiteral("remote vpn2.example.net 443 tcp")), kRichKept);
+    // Everything else, the unknown directive and the formatting included, is
+    // still byte for byte what the document was.
+    QCOMPARE(text.replace(QStringLiteral("remote vpn3.example.net 443 tcp"), QStringLiteral("remote vpn2.example.net 443 tcp")), kRich);
 }
 
 void Openvpn3ProfileTest::editingKeepsArgumentsItWasNotToldAbout()
@@ -822,6 +1040,12 @@ void Openvpn3ProfileTest::spotsKeyMaterialThatCouldNeedAPassphrase_data()
     // A file reference cannot be inspected, so it has to be assumed.
     QTest::newRow("key file reference") << u"client\nkey /etc/openvpn/client.key\n"_s << true;
     QTest::newRow("pkcs12 file reference") << u"client\npkcs12 /etc/openvpn/client.p12\n"_s << true;
+    // openvpn3 itself takes nothing but the remote from a <connection>
+    // block, but the backend's service looks for key material anywhere in
+    // the profile (pki.py) and asks for its passphrase, so this does too.
+    QTest::newRow("encrypted key inside a connection block")
+        << u"client\n<connection>\nremote a\n<key>\n-----BEGIN ENCRYPTED PRIVATE KEY-----\nAAAA\n</key>\n</connection>\n"_s << true;
+    QTest::newRow("pkcs12 inside a connection block") << u"client\n<connection>\nremote a\n<pkcs12>\nAAAA\n</pkcs12>\n</connection>\n"_s << true;
 }
 
 void Openvpn3ProfileTest::spotsKeyMaterialThatCouldNeedAPassphrase()
@@ -873,7 +1097,12 @@ void Openvpn3ProfileTest::nestedInlineCredentialsAreFoundAsABlock()
     const QList<Openvpn3Entry> found = profile.optionsNamed(u"auth-user-pass"_s);
     QCOMPARE(found.size(), 1);
     QVERIFY(found.constFirst().isBlock());
-    QVERIFY(profile.needsNormalization());
+    // Found, but not the backend's to lift out: its import keeps a scope as
+    // written, and openvpn3 does not read credentials from one. It is
+    // reported as a caveat instead.
+    QVERIFY(!profile.needsNormalization());
+    QCOMPARE(profile.connectionCaveats().size(), 1);
+    QCOMPARE(profile.connectionCaveats().constFirst().name, u"auth-user-pass"_s);
 }
 
 void Openvpn3ProfileTest::remoteHostsComeFromEveryScope_data()
@@ -916,7 +1145,11 @@ void Openvpn3ProfileTest::normalizationIsNeededOnlyForFilesAndCredentials_data()
     QTest::newRow("bare auth-user-pass") << u"client\nauth-user-pass\n"_s << false;
     QTest::newRow("explicit inline marker") << u"client\nca [inline]\n<ca>\nPEM\n</ca>\n"_s << false;
     QTest::newRow("a crl directory is not inlined") << u"client\ncrl-verify /etc/openvpn/crls dir\n"_s << false;
-    QTest::newRow("a file named inside a connection block") << u"client\n<connection>\nca ca.crt\n</connection>\n"_s << true;
+    // The backend inlines nothing inside a scope, and openvpn3 reads only the
+    // remote from one, so nothing in there is resolved; connectionCaveats()
+    // says so instead.
+    QTest::newRow("a file named inside a connection block") << u"client\n<connection>\nca ca.crt\n</connection>\n"_s << false;
+    QTest::newRow("credentials inside a connection block") << u"client\n<connection>\nauth-user-pass creds.txt\n</connection>\n"_s << false;
 }
 
 void Openvpn3ProfileTest::normalizationIsNeededOnlyForFilesAndCredentials()

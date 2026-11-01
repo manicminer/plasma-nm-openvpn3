@@ -97,6 +97,13 @@ jobs:
       - name: Test
         run: testing/run.sh test
 
+      # The backend's own front-end conformance suite, through this editor.
+      # Everything but the policy differences listed in
+      # testing/conformance-differences.txt has to pass.
+      - name: Run the backend's front-end conformance suite
+        if: env.BACKEND_ROOT != ''
+        run: testing/run.sh conformance
+
       - name: Package
         run: testing/run.sh package
 
